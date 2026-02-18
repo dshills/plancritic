@@ -1,0 +1,79 @@
+name: react-frontend
+version: 1
+description: >
+  Frontend-specific checks for React applications: component design,
+  state management, accessibility, bundle size, and API contracts.
+
+constraints:
+  language:
+    primary: typescript
+    notes:
+      - Prefer TypeScript for all new components.
+  dependencies:
+    policy: minimize
+    rules:
+      - Any new dependency must be justified and evaluated for bundle impact.
+      - Prefer tree-shakeable packages.
+  architecture:
+    rules:
+      - Components should be small and composable.
+      - Separate presentation from logic (hooks, containers).
+      - Avoid prop drilling; use context or state management where appropriate.
+
+checklists:
+  - id: COMPONENT_DESIGN
+    title: Component design
+    checks:
+      - "Are new components specified with props, state, and behavior?"
+      - "Is component hierarchy and data flow documented?"
+      - "Are reusable vs page-specific components distinguished?"
+
+  - id: STATE_MANAGEMENT
+    title: State management
+    checks:
+      - "Is the state management approach specified (local, context, store)?"
+      - "Are side effects and async operations handled explicitly?"
+      - "Is state shape defined for shared state?"
+
+  - id: ACCESSIBILITY
+    title: Accessibility
+    checks:
+      - "Are ARIA roles and labels specified for interactive elements?"
+      - "Is keyboard navigation addressed?"
+      - "Are color contrast and screen reader concerns mentioned?"
+
+  - id: API_INTEGRATION
+    title: API integration
+    checks:
+      - "Are API request/response types defined?"
+      - "Is error handling for API calls specified?"
+      - "Are loading and empty states addressed?"
+
+  - id: TESTING_FE
+    title: Frontend testing
+    checks:
+      - "Are component tests planned (unit + integration)?"
+      - "Is user interaction testing specified (click, type, navigate)?"
+      - "Are accessibility tests included?"
+
+  - id: PERFORMANCE
+    title: Performance
+    checks:
+      - "Is bundle size impact considered for new dependencies?"
+      - "Are code splitting and lazy loading addressed where relevant?"
+      - "Are re-render optimizations considered for list/table views?"
+
+heuristics:
+  contradictions:
+    - trigger_a: "no new dependencies"
+      trigger_b: "install"
+      severity: CRITICAL
+      note: "Plan claims no new deps but installs packages."
+  ambiguity_triggers:
+    - "fast"
+    - "responsive"
+    - "smooth"
+    - "modern"
+    - "clean UI"
+    - "optimize later"
+    - "best practices"

@@ -1,7 +1,7 @@
-name: davin-go
+name: go-backend
 version: 1
 description: >
-  House rules for Go backend work: minimal deps, explicit contracts, measurable acceptance criteria,
+  Go backend checks: minimal deps, explicit contracts, error handling,
   test plan required, and operational realism.
 
 constraints:
@@ -13,44 +13,25 @@ constraints:
     policy: minimize
     rules:
       - Any new dependency must be explicitly called out in the plan with justification.
-      - Prefer small, well-maintained packages; avoid “frameworky” deps.
+      - Prefer small, well-maintained packages; avoid "frameworky" deps.
       - If plan claims "dependency-free" (or similar), then any dependency mention is a contradiction.
   database:
     preferred: mysql8
     rules:
-      - Use timestamp column names: created_at, updated_at (not created_on/created_date).
+      - Use timestamp column names created_at, updated_at.
       - Default to VARCHAR(255) unless a smaller bound is certain.
       - Prefer implementing logic in Go over stored procedures.
-      - For nullable DB fields in Go structs, prefer db package nullable types (e.g., db.NullString) when applicable.
+      - For nullable DB fields in Go structs, prefer db package nullable types.
   error_handling:
     rules:
-      - 'Errors must be wrapped with context at boundaries (e.g., fmt.Errorf("Thing: %w", err)).'
+      - Errors must be wrapped with context at boundaries.
       - No panics for control flow.
       - Explicitly define error semantics for APIs (status codes, error codes/messages).
   architecture:
     rules:
-      - Explicit interfaces and boundaries: define contracts (API, schema, events) before implementation.
+      - Explicit interfaces and boundaries; define contracts before implementation.
       - Prefer small, composable packages; avoid god objects and circular imports.
-      - Avoid magic global state; configuration must be explicit and injectable.
-  testing:
-    rules:
-      - Every new behavior requires tests mapped to acceptance criteria.
-      - Plan must specify test types: unit/integration/contract, and what each validates.
-      - If mocking is needed, prefer github.com/stretchr/testify/mock.
-  api_design:
-    rules:
-      - Plan must define request/response schemas (JSON) for new endpoints.
-      - Include auth/authorization behavior explicitly when relevant.
-      - Include pagination/sorting rules for list endpoints when relevant.
-  observability:
-    rules:
-      - Logging must be structured and include request correlation fields.
-      - Metrics/tracing are recommended for critical paths; plan must specify at least logs + error reporting.
-  operations:
-    rules:
-      - Plans must include migration/rollback strategy for schema changes.
-      - Plans must include config/env var inventory for new config.
-      - Plans must describe deployment considerations (containers, health checks) when relevant.
+      - Configuration must be explicit and injectable.
 
 checklists:
   - id: CRISP_CONTRACTS
@@ -64,20 +45,20 @@ checklists:
     title: Dependency discipline
     checks:
       - "Does the plan introduce ANY new dependencies? If yes, are they listed and justified?"
-      - "Does the plan contradict itself about dependencies (e.g., 'dependency-free' vs adding libs)?"
+      - "Does the plan contradict itself about dependencies?"
       - "Does the plan prefer stdlib alternatives where feasible?"
 
   - id: DB_REALISM
-    title: Database realism (MySQL 8+ default)
+    title: Database realism (MySQL 8+)
     checks:
       - "Are schema changes described (DDL/migrations) with rollback?"
       - "Are created_at/updated_at used when adding timestamps?"
       - "Are column types realistic (VARCHAR(255) default unless bounded)?"
-      - "Are nullability and Go types planned (db.NullString etc.)?"
+      - "Are nullability and Go types planned?"
       - "Is business logic in Go rather than stored procedures?"
 
   - id: ERROR_SEMANTICS
-    title: Error semantics & correctness
+    title: Error semantics
     checks:
       - "Does the plan define how errors surface (HTTP status, error codes, messages)?"
       - "Does the plan describe error wrapping/context at boundaries?"
@@ -93,20 +74,18 @@ checklists:
   - id: OPERATIONS_AND_ROLLBACK
     title: Ops, rollback, safety
     checks:
-      - "Are migrations idempotent and reversible (or explicitly non-reversible with mitigations)?"
+      - "Are migrations idempotent and reversible?"
       - "Are configs/env vars enumerated (names, defaults, secrets handling)?"
-      - "Are health checks, startup ordering, and deployment steps addressed when relevant?"
+      - "Are health checks, startup ordering, and deployment steps addressed?"
 
   - id: SECURITY_BASELINES
     title: Security baselines
     checks:
       - "Does the plan explicitly handle authn/authz where relevant?"
       - "Are inputs validated and unsafe defaults avoided?"
-      - "Are secrets explicitly excluded from code and handled via env/secret manager?"
+      - "Are secrets excluded from code and handled via env/secret manager?"
 
 heuristics:
-  # These are pattern-based triggers the critic should look for in the plan text.
-  # The CLI can pass these into the model as “watch for these phrases” hints.
   contradictions:
     - trigger_a: "dependency-free"
       trigger_b: "add dependency"
@@ -116,7 +95,6 @@ heuristics:
       trigger_b: "stored procedure"
       severity: CRITICAL
       note: "Plan contradicts stated preference to keep logic in Go."
-
   ambiguity_triggers:
     - "fast"
     - "scalable"

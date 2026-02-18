@@ -1,0 +1,87 @@
+name: aws-deploy
+version: 1
+description: >
+  Deployment-specific checks for AWS infrastructure: IAM, networking,
+  rollback, monitoring, cost, and infrastructure-as-code.
+
+constraints:
+  platform:
+    primary: aws
+  infrastructure:
+    rules:
+      - All infrastructure changes must be defined as code (CloudFormation, Terraform, CDK).
+      - Manual console changes are not acceptable for production.
+  security:
+    rules:
+      - Follow principle of least privilege for IAM roles and policies.
+      - No hardcoded credentials or secrets in templates.
+      - Enable encryption at rest and in transit by default.
+
+checklists:
+  - id: IAM_PERMISSIONS
+    title: IAM and permissions
+    checks:
+      - "Are IAM roles and policies explicitly defined with least privilege?"
+      - "Are service-linked roles used where applicable?"
+      - "Are cross-account access patterns documented?"
+
+  - id: NETWORKING
+    title: Networking
+    checks:
+      - "Are VPC, subnet, and security group configurations specified?"
+      - "Are ingress/egress rules explicitly defined?"
+      - "Is private vs public subnet placement justified?"
+
+  - id: DEPLOYMENT_STRATEGY
+    title: Deployment strategy
+    checks:
+      - "Is the deployment strategy specified (blue-green, rolling, canary)?"
+      - "Is rollback procedure documented and tested?"
+      - "Are deployment dependencies and ordering addressed?"
+
+  - id: MONITORING_ALERTING
+    title: Monitoring and alerting
+    checks:
+      - "Are CloudWatch alarms or equivalent monitoring defined?"
+      - "Are health checks configured for load balancers and services?"
+      - "Are log groups and retention policies specified?"
+
+  - id: COST
+    title: Cost awareness
+    checks:
+      - "Are instance types and sizing justified?"
+      - "Are auto-scaling policies defined with min/max bounds?"
+      - "Are unused resources cleaned up or tagged for lifecycle?"
+
+  - id: IaC
+    title: Infrastructure as Code
+    checks:
+      - "Are all resources defined in CloudFormation, Terraform, or CDK?"
+      - "Is state management addressed (S3 backend, locking)?"
+      - "Are environment-specific configurations parameterized?"
+
+  - id: DATA_SAFETY
+    title: Data safety
+    checks:
+      - "Are backup and snapshot policies defined for databases and storage?"
+      - "Are deletion protection and point-in-time recovery enabled?"
+      - "Is data migration plan included with rollback?"
+
+heuristics:
+  contradictions:
+    - trigger_a: "infrastructure as code"
+      trigger_b: "manual console"
+      severity: CRITICAL
+      note: "Plan claims IaC but includes manual console steps."
+    - trigger_a: "least privilege"
+      trigger_b: "AdministratorAccess"
+      severity: CRITICAL
+      note: "Plan claims least privilege but uses admin access."
+  ambiguity_triggers:
+    - "scalable"
+    - "highly available"
+    - "secure"
+    - "cost-effective"
+    - "production-ready"
+    - "optimize later"
+    - "best practices"

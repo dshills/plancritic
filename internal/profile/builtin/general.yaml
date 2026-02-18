@@ -1,0 +1,62 @@
+name: general
+version: 1
+description: >
+  Language-agnostic baseline checks: contracts, tests, rollback,
+  security, and observability.
+
+constraints:
+  language:
+    primary: any
+  dependencies:
+    policy: justify-new
+    rules:
+      - Any new dependency must be explicitly called out with justification.
+
+checklists:
+  - id: CONTRACTS
+    title: Contracts and acceptance criteria
+    checks:
+      - "Are new interfaces/endpoints/events explicitly specified?"
+      - "Are acceptance criteria measurable and testable?"
+      - "Are inputs and outputs validated with edge cases?"
+
+  - id: TESTING
+    title: Test coverage
+    checks:
+      - "Does the plan specify what tests will be written?"
+      - "Are test types identified (unit, integration, e2e)?"
+      - "Are tests mapped to acceptance criteria?"
+
+  - id: ROLLBACK
+    title: Rollback and safety
+    checks:
+      - "Is there a rollback strategy for data/schema changes?"
+      - "Are migrations described with rollback steps?"
+      - "Are feature flags or gradual rollout considered where appropriate?"
+
+  - id: SECURITY
+    title: Security basics
+    checks:
+      - "Are authn/authz concerns addressed where relevant?"
+      - "Are inputs validated and sanitized?"
+      - "Are secrets handled via environment or secret manager?"
+
+  - id: OBSERVABILITY
+    title: Observability
+    checks:
+      - "Does the plan include logging strategy?"
+      - "Are error reporting and alerting considered?"
+      - "Is there mention of metrics or tracing for critical paths?"
+
+heuristics:
+  contradictions: []
+  ambiguity_triggers:
+    - "fast"
+    - "scalable"
+    - "robust"
+    - "secure"
+    - "optimize later"
+    - "handle edge cases"
+    - "production-ready"
+    - "best practices"
+    - "etc."
