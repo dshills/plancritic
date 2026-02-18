@@ -1,0 +1,174 @@
+{
+  "tool": "plancritic",
+  "version": "1.0",
+  "input": {
+    "plan_file": "simple.md",
+    "plan_hash": "",
+    "profile": "go-backend",
+    "strict": false
+  },
+  "summary": {
+    "verdict": "NOT_EXECUTABLE",
+    "score": 39,
+    "critical_count": 2,
+    "warn_count": 3,
+    "info_count": 0
+  },
+  "questions": [
+    {
+      "id": "Q-0001",
+      "severity": "WARN",
+      "question": "What are the error response schemas for the register and login endpoints?",
+      "why_needed": "The plan defines endpoints but does not specify error handling behavior or response codes.",
+      "blocks": ["P-003"],
+      "evidence": [
+        {
+          "source": "plan",
+          "path": "simple.md",
+          "line_start": 15,
+          "line_end": 20,
+          "quote": "POST /api/register... POST /api/login..."
+        }
+      ],
+      "suggested_answers": [
+        "Return 400 with {\"error\": \"message\"} for validation failures",
+        "Return 409 for duplicate email, 401 for invalid credentials"
+      ]
+    }
+  ],
+  "issues": [
+    {
+      "id": "ISSUE-0001",
+      "severity": "CRITICAL",
+      "category": "CONTRADICTION",
+      "title": "Plan claims dependency-free but adds two dependencies",
+      "description": "The plan states 'keep the project dependency-free' in section 1 but adds jwt and bcrypt packages in section 4.",
+      "evidence": [
+        {
+          "source": "plan",
+          "path": "simple.md",
+          "line_start": 4,
+          "line_end": 5,
+          "quote": "We will keep the project dependency-free and use only the standard library."
+        },
+        {
+          "source": "plan",
+          "path": "simple.md",
+          "line_start": 22,
+          "line_end": 23,
+          "quote": "Add github.com/golang-jwt/jwt for token generation. Add golang.org/x/crypto/bcrypt for password hashing."
+        }
+      ],
+      "impact": "Implementation will violate the stated dependency constraint.",
+      "recommendation": "Either remove the dependency-free claim and justify the new dependencies, or implement using stdlib only.",
+      "blocking": true,
+      "tags": ["deps", "consistency"]
+    },
+    {
+      "id": "ISSUE-0002",
+      "severity": "CRITICAL",
+      "category": "MISSING_PREREQUISITE",
+      "title": "Timestamp column naming contradicts constraints",
+      "description": "The plan uses 'created_on' but constraints require 'created_at/updated_at'. Also missing updated_at column.",
+      "evidence": [
+        {
+          "source": "plan",
+          "path": "simple.md",
+          "line_start": 12,
+          "line_end": 12,
+          "quote": "created_on (DATETIME)"
+        },
+        {
+          "source": "context",
+          "path": "constraints.md",
+          "line_start": 3,
+          "line_end": 3,
+          "quote": "Use created_at/updated_at for timestamp columns"
+        }
+      ],
+      "impact": "Schema will not conform to project conventions.",
+      "recommendation": "Rename created_on to created_at and add updated_at column.",
+      "blocking": true,
+      "tags": ["schema", "conventions"]
+    },
+    {
+      "id": "ISSUE-0003",
+      "severity": "WARN",
+      "category": "AMBIGUITY",
+      "title": "Vague testing plan",
+      "description": "The testing section uses vague terms 'robust' and 'production-ready' without specifying test types or acceptance criteria.",
+      "evidence": [
+        {
+          "source": "plan",
+          "path": "simple.md",
+          "line_start": 26,
+          "line_end": 26,
+          "quote": "Make it robust and production-ready."
+        }
+      ],
+      "impact": "Cannot verify test completeness without concrete criteria.",
+      "recommendation": "Specify unit tests, integration tests, and acceptance criteria for each endpoint.",
+      "blocking": false,
+      "tags": ["testing", "ambiguity"]
+    },
+    {
+      "id": "ISSUE-0004",
+      "severity": "WARN",
+      "category": "NON_DETERMINISM",
+      "title": "Deployment deferred with 'optimize later'",
+      "description": "The deployment section says 'optimize later' without defining what needs optimization or when.",
+      "evidence": [
+        {
+          "source": "plan",
+          "path": "simple.md",
+          "line_start": 29,
+          "line_end": 29,
+          "quote": "Deploy to production and optimize later."
+        }
+      ],
+      "impact": "No operational readiness criteria defined.",
+      "recommendation": "Define deployment requirements: health checks, monitoring, rollback strategy.",
+      "blocking": false,
+      "tags": ["operations", "ambiguity"]
+    },
+    {
+      "id": "ISSUE-0005",
+      "severity": "WARN",
+      "category": "UNSPECIFIED_INTERFACE",
+      "title": "No error response schemas for API endpoints",
+      "description": "API endpoints are listed without error response definitions.",
+      "evidence": [
+        {
+          "source": "plan",
+          "path": "simple.md",
+          "line_start": 15,
+          "line_end": 20,
+          "quote": "POST /api/register... POST /api/login..."
+        },
+        {
+          "source": "context",
+          "path": "constraints.md",
+          "line_start": 5,
+          "line_end": 5,
+          "quote": "All endpoints must include error response schemas"
+        }
+      ],
+      "impact": "Clients cannot implement proper error handling.",
+      "recommendation": "Define error response schemas for each endpoint including status codes and error body format.",
+      "blocking": false,
+      "tags": ["api", "contracts"]
+    }
+  ],
+  "patches": [
+    {
+      "id": "PATCH-0001",
+      "type": "PLAN_TEXT_EDIT",
+      "title": "Fix timestamp column naming",
+      "diff_unified": "--- simple.md\n+++ simple.md\n@@ -12,1 +12,2 @@\n-- created_on (DATETIME)\n+- created_at (TIMESTAMP)\n+- updated_at (TIMESTAMP)\n"
+    }
+  ],
+  "meta": {
+    "model": "mock",
+    "temperature": 0.2
+  }
+}

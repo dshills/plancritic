@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dshills/plancritic/schema/review.v1.json",
+  "title": "PlanCritic Review",
+  "type": "object",
+  "required": ["tool", "version", "input", "summary", "issues", "questions", "meta"],
+  "properties": {
+    "tool": { "type": "string", "const": "plancritic" },
+    "version": { "type": "string" },
+    "input": {
+      "type": "object",
+      "required": ["plan_file", "plan_hash"],
+      "properties": {
+        "plan_file": { "type": "string" },
+        "plan_hash": { "type": "string" },
+        "context_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "hash"],
+            "properties": {
+              "path": { "type": "string" },
+              "hash": { "type": "string" }
+            }
+          }
+        },
+        "profile": { "type": "string" },
+        "strict": { "type": "boolean" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["verdict", "score", "critical_count", "warn_count", "info_count"],
+      "properties": {
+        "verdict": { "type": "string", "enum": ["EXECUTABLE_AS_IS", "EXECUTABLE_WITH_CLARIFICATIONS", "NOT_EXECUTABLE"] },
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "critical_count": { "type": "integer", "minimum": 0 },
+        "warn_count": { "type": "integer", "minimum": 0 },
+        "info_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "category", "title", "description", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^ISSUE-" },
+          "severity": { "type": "string", "enum": ["INFO", "WARN", "CRITICAL"] },
+          "category": {
+            "type": "string",
+            "enum": [
+              "CONTRADICTION", "AMBIGUITY", "MISSING_PREREQUISITE",
+              "MISSING_ACCEPTANCE_CRITERIA", "RISK_SECURITY", "RISK_DATA",
+              "RISK_OPERATIONS", "TEST_GAP", "SCOPE_CREEP_RISK",
+              "UNREALISTIC_STEP", "ORDERING_DEPENDENCY",
+              "UNSPECIFIED_INTERFACE", "NON_DETERMINISM"
+            ]
+          },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/evidence" }
+          },
+          "impact": { "type": "string" },
+          "recommendation": { "type": "string" },
+          "blocking": { "type": "boolean" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "question", "why_needed", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^Q-" },
+          "severity": { "type": "string", "enum": ["INFO", "WARN", "CRITICAL"] },
+          "question": { "type": "string" },
+          "why_needed": { "type": "string" },
+          "blocks": { "type": "array", "items": { "type": "string" } },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/evidence" }
+          },
+          "suggested_answers": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "patches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "title", "diff_unified"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^PATCH-" },
+          "type": { "type": "string", "enum": ["PLAN_TEXT_EDIT"] },
+          "title": { "type": "string" },
+          "diff_unified": { "type": "string" }
+        }
+      }
+    },
+    "checklists": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "checks"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["check", "status"],
+              "properties": {
+                "check": { "type": "string" },
+                "status": { "type": "string", "enum": ["PASS", "FAIL", "N/A"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "required": ["model", "temperature"],
+      "properties": {
+        "model": { "type": "string" },
+        "temperature": { "type": "number" }
+      }
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "required": ["source", "path", "line_start", "line_end", "quote"],
+      "properties": {
+        "source": { "type": "string", "enum": ["plan", "context"] },
+        "path": { "type": "string" },
+        "line_start": { "type": "integer", "minimum": 1 },
+        "line_end": { "type": "integer", "minimum": 1 },
+        "quote": { "type": "string" }
+      }
+    }
+  }
+}
