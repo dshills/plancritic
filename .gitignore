@@ -1,5 +1,5 @@
-# Binary
-plancritic
+# Binary (root only, not cmd/plancritic/ source dir)
+/plancritic
 
 # Go
 *.exe
