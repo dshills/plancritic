@@ -6,13 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 PlanCritic is a Go CLI tool that reviews software implementation plans (written by coding agents or engineers) and returns structured critique: contradictions, ambiguities, missing prerequisites, questions, and suggested patches. Output is JSON-first (Markdown is rendered from JSON). The full specification lives in `specs/SPEC.md`.
 
-## Project Status
-
-Pre-implementation. The repo contains the product spec and one built-in profile (`internal/profile/builtin/davin-go.yaml`). No Go code, go.mod, or build infrastructure exists yet.
-
-## Build & Test Commands (planned)
-
-Once implemented, the project should use standard Go tooling:
+## Build & Test Commands
 - **Build:** `go build -o plancritic ./cmd/plancritic`
 - **Test all:** `go test ./...`
 - **Test single package:** `go test ./internal/review`
@@ -28,17 +22,18 @@ Load plan + context files → Redact secrets → Build LLM prompt
 → Optionally generate patch diff → Output JSON or render Markdown
 ```
 
-### Planned Package Layout
-- `cmd/plancritic` — CLI entry point (Cobra or urfave)
+### Package Layout
+- `cmd/plancritic` — CLI entry point (Cobra), `check` command orchestration
 - `internal/plan` — Read, line-number, hash plan files
 - `internal/context` — Load and line-number context files
 - `internal/redact` — Pattern-based secret redaction before LLM calls
-- `internal/profile` — Load YAML profile checklists (embedded in binary)
-- `internal/llm` — Provider interface (`Generate(ctx, prompt, settings) -> string`) with pluggable implementations (OpenAI, Anthropic)
+- `internal/profile` — Load YAML profile checklists (go:embed)
+- `internal/llm` — Provider interface with Anthropic and OpenAI implementations
+- `internal/prompt` — LLM prompt builder and repair prompt generation
 - `internal/schema` — JSON schema validation of LLM output
-- `internal/review` — Review types, deterministic scoring, sorting
+- `internal/review` — Review types, deterministic scoring, sorting, grounding checks
 - `internal/render` — Markdown renderer from JSON
-- `internal/patch` — Unified diff generation for plan text edits
+- `internal/patch` — Unified diff file writer for plan text edits
 
 ### Key Design Decisions
 - **Evidence-driven:** Every issue/question must reference specific plan excerpts with line ranges and quotes.
@@ -61,7 +56,7 @@ Load plan + context files → Redact secrets → Build LLM prompt
 - 5: schema validation error
 
 ### Profiles
-Profiles are YAML checklists + constraints embedded in the binary. Built-in profiles to implement: `general` (default), `go-backend`, `react-frontend`, `aws-deploy`. See `internal/profile/builtin/davin-go.yaml` for the pattern.
+Profiles are YAML checklists + constraints embedded in the binary via `go:embed`. Built-in profiles: `general` (default), `go-backend`, `react-frontend`, `aws-deploy`, `davin-go`. See `internal/profile/builtin/*.yaml`.
 
 ### Phase 2 Seams (do not implement, but leave room)
 - `ReviewInput` struct should have an optional `Artifacts` list (diffs, test output)
