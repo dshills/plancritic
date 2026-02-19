@@ -255,6 +255,29 @@ func TestAnthropicMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestAnthropicTruncation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := anthropicResponse{
+			Content: []anthropicContentBlock{
+				{Type: "text", Text: `{"partial": true}`},
+			},
+			StopReason: "max_tokens",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	_, err := p.Generate(context.Background(), "prompt", Settings{MaxTokens: 100})
+	if err == nil {
+		t.Fatal("expected error for truncated response")
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("error should mention 'truncated', got: %s", err.Error())
+	}
+}
+
 func TestAnthropicNoTextContent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := anthropicResponse{

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
 const (
@@ -29,7 +30,7 @@ func NewAnthropic() (*AnthropicProvider, error) {
 	if key == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
 	}
-	return &AnthropicProvider{apiKey: key, apiURL: anthropicAPIURL, client: &http.Client{}}, nil
+	return &AnthropicProvider{apiKey: key, apiURL: anthropicAPIURL, client: &http.Client{Timeout: 5 * time.Minute}}, nil
 }
 
 func (a *AnthropicProvider) Name() string { return "anthropic" }
@@ -87,6 +88,10 @@ func (a *AnthropicProvider) Generate(ctx context.Context, prompt string, s Setti
 		return "", fmt.Errorf("anthropic: parse response: %w", err)
 	}
 
+	if result.StopReason == "max_tokens" {
+		return "", fmt.Errorf("anthropic: response truncated (hit max_tokens=%d)", maxTokens)
+	}
+
 	for _, block := range result.Content {
 		if block.Type == "text" {
 			return block.Text, nil
@@ -109,7 +114,8 @@ type anthropicMessage struct {
 }
 
 type anthropicResponse struct {
-	Content []anthropicContentBlock `json:"content"`
+	Content    []anthropicContentBlock `json:"content"`
+	StopReason string                  `json:"stop_reason"`
 }
 
 type anthropicContentBlock struct {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
 const (
@@ -28,7 +29,7 @@ func NewOpenAI() (*OpenAIProvider, error) {
 	if key == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
 	}
-	return &OpenAIProvider{apiKey: key, apiURL: openaiAPIURL, client: &http.Client{}}, nil
+	return &OpenAIProvider{apiKey: key, apiURL: openaiAPIURL, client: &http.Client{Timeout: 5 * time.Minute}}, nil
 }
 
 func (o *OpenAIProvider) Name() string { return "openai" }

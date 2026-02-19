@@ -31,6 +31,31 @@ func TestCheckGrounding(t *testing.T) {
 	}
 }
 
+func TestCheckGroundingQuestions(t *testing.T) {
+	r := &Review{
+		Questions: []Question{
+			{ID: "Q-1", Question: "Does the codebase uses Redis?", WhyNeeded: "Need to know."},
+			{ID: "Q-2", Question: "What format?", WhyNeeded: "The existing implementation depends on it."},
+			{ID: "Q-3", Question: "What version?", WhyNeeded: "For compatibility."},
+		},
+	}
+
+	violations := CheckGrounding(r)
+	ids := make(map[string]bool)
+	for _, v := range violations {
+		ids[v.IssueID] = true
+	}
+	if !ids["Q-1"] {
+		t.Error("expected violation for Q-1 (question text)")
+	}
+	if !ids["Q-2"] {
+		t.Error("expected violation for Q-2 (why_needed text)")
+	}
+	if ids["Q-3"] {
+		t.Error("Q-3 should not have a violation")
+	}
+}
+
 func TestApplyGroundingDowngrades(t *testing.T) {
 	r := &Review{
 		Issues: []Issue{

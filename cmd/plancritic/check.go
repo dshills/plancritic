@@ -37,7 +37,6 @@ type checkFlags struct {
 	patchOut          string
 	failOn            string
 	redactEnabled     bool
-	offline           bool
 	verbose           bool
 	debug             bool
 	provider          llm.Provider // if non-nil, used instead of ResolveProvider (for testing)
@@ -71,7 +70,6 @@ func newCheckCmd() *cobra.Command {
 	flags.StringVar(&f.patchOut, "patch-out", "", "Write suggested patches as unified diff")
 	flags.StringVar(&f.failOn, "fail-on", "", "Exit non-zero if verdict meets this level")
 	flags.BoolVar(&f.redactEnabled, "redact", true, "Redact secrets before sending to model")
-	flags.BoolVar(&f.offline, "offline", false, "Fail if no model provider is configured")
 	flags.BoolVar(&f.verbose, "verbose", false, "Print processing steps to stderr")
 	flags.BoolVar(&f.debug, "debug", false, "Save prompt to debug file")
 
@@ -125,16 +123,18 @@ func runCheck(planPath string, f *checkFlags) error {
 		return exitError(3, "failed to load profile: %v", err)
 	}
 
-	// 5. Resolve LLM provider
+	// 5. Validate format early
+	if f.format != "json" && f.format != "md" {
+		return exitError(3, "unknown format: %s", f.format)
+	}
+
+	// 6. Resolve LLM provider
 	verbose("Resolving LLM provider")
 	provider := f.provider
 	if provider == nil {
 		var err error
 		provider, err = llm.ResolveProvider(f.model)
 		if err != nil {
-			if f.offline {
-				return exitError(4, "no model provider configured (--offline): %v", err)
-			}
 			return exitError(4, "model provider error: %v", err)
 		}
 	}
@@ -215,8 +215,6 @@ func runCheck(planPath string, f *checkFlags) error {
 	verbose("Validation passed")
 
 	// 11. Post-process
-	// Override score and summary with deterministic computation
-	rev.Summary = review.ComputeSummary(rev.Issues)
 	review.SortIssues(rev.Issues)
 	review.SortQuestions(rev.Questions)
 	review.Truncate(&rev, review.DefaultMaxIssues, review.DefaultMaxQuestions)
@@ -227,8 +225,6 @@ func runCheck(planPath string, f *checkFlags) error {
 		if len(violations) > 0 {
 			verbose("Grounding violations found: %d, applying downgrades", len(violations))
 			review.ApplyGroundingDowngrades(&rev, violations)
-			// Recompute after downgrades
-			rev.Summary = review.ComputeSummary(rev.Issues)
 			review.SortIssues(rev.Issues)
 		}
 	}
@@ -236,7 +232,7 @@ func runCheck(planPath string, f *checkFlags) error {
 	// Apply severity threshold filter
 	rev.Issues = filterBySeverity(rev.Issues, f.severityThreshold)
 	rev.Questions = filterQuestionsBySeverity(rev.Questions, f.severityThreshold)
-	// Recompute summary after filtering
+	// Compute deterministic summary from final issue list
 	rev.Summary = review.ComputeSummary(rev.Issues)
 
 	// Fill metadata
@@ -297,7 +293,11 @@ func runCheck(planPath string, f *checkFlags) error {
 
 	// 14. Exit code based on --fail-on
 	if f.failOn != "" {
-		if verdictMeetsThreshold(rev.Summary.Verdict, f.failOn) {
+		meets, err := verdictMeetsThreshold(rev.Summary.Verdict, f.failOn)
+		if err != nil {
+			return exitError(3, "%v", err)
+		}
+		if meets {
 			return exitError(2, "verdict %s meets fail threshold %s", rev.Summary.Verdict, f.failOn)
 		}
 	}
@@ -320,7 +320,7 @@ func filterBySeverity(issues []review.Issue, threshold string) []review.Issue {
 	minOrder := severityThresholdOrder(threshold)
 	var result []review.Issue
 	for _, iss := range issues {
-		if iss.Severity.Valid() && severityOrder(iss.Severity) <= minOrder {
+		if !iss.Severity.Valid() || severityOrder(iss.Severity) <= minOrder {
 			result = append(result, iss)
 		}
 	}
@@ -331,7 +331,7 @@ func filterQuestionsBySeverity(questions []review.Question, threshold string) []
 	minOrder := severityThresholdOrder(threshold)
 	var result []review.Question
 	for _, q := range questions {
-		if q.Severity.Valid() && severityOrder(q.Severity) <= minOrder {
+		if !q.Severity.Valid() || severityOrder(q.Severity) <= minOrder {
 			result = append(result, q)
 		}
 	}
@@ -360,27 +360,28 @@ func severityThresholdOrder(threshold string) int {
 	}
 }
 
-func verdictMeetsThreshold(verdict review.Verdict, failOn string) bool {
+var validFailOnValues = map[string]int{
+	"executable":     0,
+	"clarifications": 1,
+	"not_executable": 2,
+	"not-executable": 2,
+	"critical":       2,
+}
+
+func verdictMeetsThreshold(verdict review.Verdict, failOn string) (bool, error) {
 	verdictLevel := map[review.Verdict]int{
 		review.VerdictExecutable:         0,
 		review.VerdictWithClarifications: 1,
 		review.VerdictNotExecutable:      2,
 	}
-	thresholdLevel := map[string]int{
-		"executable":         0,
-		"clarifications":     1,
-		"not_executable":     2,
-		"not-executable":     2,
-		"critical":           2,
-	}
 
 	vl, vlOk := verdictLevel[verdict]
 	if !vlOk {
-		return false
+		return false, nil
 	}
-	tl, ok := thresholdLevel[strings.ToLower(failOn)]
+	tl, ok := validFailOnValues[strings.ToLower(failOn)]
 	if !ok {
-		tl = 2
+		return false, fmt.Errorf("unknown --fail-on value: %q (valid: executable, clarifications, not_executable, critical)", failOn)
 	}
-	return vl >= tl
+	return vl >= tl, nil
 }

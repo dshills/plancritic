@@ -23,7 +23,7 @@ type GroundingViolation struct {
 	Phrase  string
 }
 
-// CheckGrounding scans issue text fields for phrases suggesting fabricated repo knowledge.
+// CheckGrounding scans issue and question text fields for phrases suggesting fabricated repo knowledge.
 func CheckGrounding(r *Review) []GroundingViolation {
 	var violations []GroundingViolation
 	for _, iss := range r.Issues {
@@ -40,6 +40,26 @@ func CheckGrounding(r *Review) []GroundingViolation {
 				if strings.Contains(lower, phrase) {
 					violations = append(violations, GroundingViolation{
 						IssueID: iss.ID,
+						Field:   field.name,
+						Phrase:  phrase,
+					})
+				}
+			}
+		}
+	}
+	for _, q := range r.Questions {
+		for _, field := range []struct {
+			name string
+			text string
+		}{
+			{"question", q.Question},
+			{"why_needed", q.WhyNeeded},
+		} {
+			lower := strings.ToLower(field.text)
+			for _, phrase := range fabricationPhrases {
+				if strings.Contains(lower, phrase) {
+					violations = append(violations, GroundingViolation{
+						IssueID: q.ID,
 						Field:   field.name,
 						Phrase:  phrase,
 					})

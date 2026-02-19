@@ -3,6 +3,7 @@ package prompt
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	pctx "github.com/dshills/plancritic/internal/context"
@@ -67,12 +68,12 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 		b.WriteString("\n")
 	}
 
-	// 6. Plan
-	fmt.Fprintf(&b, "<plan path=%q>\n%s</plan>\n\n", opts.Plan.FilePath, plan.LineNumbered(opts.Plan))
+	// 6. Plan (use basename to avoid leaking filesystem paths to LLM)
+	fmt.Fprintf(&b, "<plan path=%q>\n%s</plan>\n\n", filepath.Base(opts.Plan.FilePath), plan.LineNumbered(opts.Plan))
 
 	// 7. Context files
 	for _, ctx := range opts.Contexts {
-		fmt.Fprintf(&b, "<context path=%q>\n%s</context>\n\n", ctx.FilePath, pctx.LineNumbered(ctx))
+		fmt.Fprintf(&b, "<context path=%q>\n%s</context>\n\n", filepath.Base(ctx.FilePath), pctx.LineNumbered(ctx))
 	}
 
 	// 8. Step IDs

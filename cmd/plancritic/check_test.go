@@ -70,14 +70,19 @@ func TestFilterBySeverity(t *testing.T) {
 	}
 }
 
-func TestFilterBySeverityDropsInvalid(t *testing.T) {
+func TestFilterBySeverityKeepsInvalid(t *testing.T) {
 	issues := []review.Issue{
 		{ID: "C1", Severity: review.SeverityCritical, Category: review.CategoryContradiction},
 		{ID: "BAD", Severity: review.Severity("BOGUS"), Category: review.CategoryAmbiguity},
 	}
 	got := filterBySeverity(issues, "info")
-	if len(got) != 1 || got[0].ID != "C1" {
-		t.Errorf("expected only C1, got %v", got)
+	if len(got) != 2 {
+		t.Errorf("expected 2 issues (invalid severity kept), got %d", len(got))
+	}
+	// Even with threshold "critical", invalid severity items are kept
+	got2 := filterBySeverity(issues, "critical")
+	if len(got2) != 2 {
+		t.Errorf("expected 2 issues with critical threshold (invalid kept), got %d", len(got2))
 	}
 }
 
@@ -116,39 +121,63 @@ func TestVerdictMeetsThreshold(t *testing.T) {
 		verdict review.Verdict
 		failOn  string
 		want    bool
+		wantErr bool
 	}{
 		// executable verdict never meets any meaningful threshold
-		{review.VerdictExecutable, "executable", true},
-		{review.VerdictExecutable, "clarifications", false},
-		{review.VerdictExecutable, "not_executable", false},
+		{review.VerdictExecutable, "executable", true, false},
+		{review.VerdictExecutable, "clarifications", false, false},
+		{review.VerdictExecutable, "not_executable", false, false},
 
 		// clarifications verdict
-		{review.VerdictWithClarifications, "executable", true},
-		{review.VerdictWithClarifications, "clarifications", true},
-		{review.VerdictWithClarifications, "not_executable", false},
-		{review.VerdictWithClarifications, "not-executable", false},
+		{review.VerdictWithClarifications, "executable", true, false},
+		{review.VerdictWithClarifications, "clarifications", true, false},
+		{review.VerdictWithClarifications, "not_executable", false, false},
+		{review.VerdictWithClarifications, "not-executable", false, false},
 
 		// not_executable verdict
-		{review.VerdictNotExecutable, "executable", true},
-		{review.VerdictNotExecutable, "clarifications", true},
-		{review.VerdictNotExecutable, "not_executable", true},
-		{review.VerdictNotExecutable, "critical", true},
+		{review.VerdictNotExecutable, "executable", true, false},
+		{review.VerdictNotExecutable, "clarifications", true, false},
+		{review.VerdictNotExecutable, "not_executable", true, false},
+		{review.VerdictNotExecutable, "critical", true, false},
 
-		// unknown verdict always returns false
-		{review.Verdict("BOGUS"), "executable", false},
+		// unknown verdict always returns false (no error)
+		{review.Verdict("BOGUS"), "executable", false, false},
 
-		// unknown failOn defaults to level 2
-		{review.VerdictNotExecutable, "bogus_threshold", true},
+		// unknown failOn returns error
+		{review.VerdictNotExecutable, "bogus_threshold", false, true},
 	}
 	for _, tt := range tests {
 		name := string(tt.verdict) + "/" + tt.failOn
 		t.Run(name, func(t *testing.T) {
-			got := verdictMeetsThreshold(tt.verdict, tt.failOn)
+			got, err := verdictMeetsThreshold(tt.verdict, tt.failOn)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error for unrecognized failOn value")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if got != tt.want {
 				t.Errorf("verdictMeetsThreshold(%q, %q) = %v, want %v", tt.verdict, tt.failOn, got, tt.want)
 			}
 		})
 	}
+}
+
+func TestRunCheckFailOnUnrecognized(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	f := &checkFlags{
+		format:            "json",
+		profileName:       "general",
+		redactEnabled:     true,
+		severityThreshold: "info",
+		failOn:            "bogus_value",
+		provider:          &llm.MockProvider{Response: validMockResponse()},
+	}
+	err := runCheck(planPath, f)
+	assertExitCode(t, err, 3)
 }
 
 // --- runCheck integration tests via MockProvider ---
