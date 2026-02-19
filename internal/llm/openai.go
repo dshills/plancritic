@@ -41,13 +41,13 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 
 	maxTokens := s.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 4096
+		maxTokens = 16384
 	}
 
 	reqBody := openaiRequest{
-		Model:       model,
-		MaxTokens:   maxTokens,
-		Temperature: s.Temperature,
+		Model:               model,
+		MaxCompletionTokens: maxTokens,
+		Temperature:         s.Temperature,
 		Messages: []openaiMessage{
 			{Role: "user", Content: prompt},
 		},
@@ -93,16 +93,21 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 		return "", fmt.Errorf("openai: no choices in response")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	choice := result.Choices[0]
+	if choice.FinishReason == "length" {
+		return "", fmt.Errorf("openai: response truncated (hit max_completion_tokens=%d)", maxTokens)
+	}
+
+	return choice.Message.Content, nil
 }
 
 type openaiRequest struct {
-	Model          string               `json:"model"`
-	MaxTokens      int                  `json:"max_tokens"`
-	Temperature    float64              `json:"temperature"`
-	Seed           *int                 `json:"seed,omitempty"`
-	Messages       []openaiMessage      `json:"messages"`
-	ResponseFormat *openaiResponseFormat `json:"response_format,omitempty"`
+	Model               string               `json:"model"`
+	MaxCompletionTokens int                  `json:"max_completion_tokens"`
+	Temperature         float64              `json:"temperature"`
+	Seed                *int                 `json:"seed,omitempty"`
+	Messages            []openaiMessage      `json:"messages"`
+	ResponseFormat      *openaiResponseFormat `json:"response_format,omitempty"`
 }
 
 type openaiMessage struct {
@@ -119,5 +124,6 @@ type openaiResponse struct {
 }
 
 type openaiChoice struct {
-	Message openaiMessage `json:"message"`
+	Message      openaiMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
 }

@@ -10,7 +10,7 @@ import (
 
 func TestResolveProviderAnthropicPrefix(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, err := ResolveProvider("anthropic:claude-sonnet-4-6-20250514")
+	p, err := ResolveProvider("anthropic:claude-sonnet-4-6")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestResolveProviderAnthropicPrefix(t *testing.T) {
 
 func TestResolveProviderClaudePrefix(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, err := ResolveProvider("claude-sonnet-4-6-20250514")
+	p, err := ResolveProvider("claude-sonnet-4-6")
 	if err != nil {
 		t.Fatal(err)
 	}

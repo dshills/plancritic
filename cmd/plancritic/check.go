@@ -62,7 +62,7 @@ func newCheckCmd() *cobra.Command {
 	flags.StringSliceVar(&f.contextPaths, "context", nil, "Context file paths (may be repeated)")
 	flags.StringVar(&f.profileName, "profile", "general", "Profile name")
 	flags.BoolVar(&f.strict, "strict", false, "Enable strict grounding mode")
-	flags.StringVar(&f.model, "model", "", "Model ID (e.g., claude-sonnet-4-6-20250514, gpt-5.2)")
+	flags.StringVar(&f.model, "model", "", "Model ID (e.g., claude-sonnet-4-6, gpt-5.2)")
 	flags.IntVar(&f.maxTokens, "max-tokens", 4096, "Max response tokens")
 	flags.Float64Var(&f.temperature, "temperature", 0.2, "Model temperature")
 	flags.IntVar(&f.seed, "seed", 0, "Random seed (if supported)")
@@ -177,6 +177,7 @@ func runCheck(planPath string, f *checkFlags) error {
 	verbose("Received LLM response (%d bytes)", len(result))
 
 	// 9. Parse JSON
+	result = llm.ExtractJSON(result)
 	var rev review.Review
 	if err := json.Unmarshal([]byte(result), &rev); err != nil {
 		return exitError(5, "failed to parse LLM response as JSON: %v", err)

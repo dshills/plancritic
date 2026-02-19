@@ -12,7 +12,7 @@ import (
 
 const (
 	anthropicAPIURL       = "https://api.anthropic.com/v1/messages"
-	anthropicDefaultModel = "claude-sonnet-4-6-20250514"
+	anthropicDefaultModel = "claude-sonnet-4-6"
 	anthropicAPIVersion   = "2023-06-01"
 )
 
@@ -42,7 +42,7 @@ func (a *AnthropicProvider) Generate(ctx context.Context, prompt string, s Setti
 
 	maxTokens := s.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 4096
+		maxTokens = 16384
 	}
 
 	reqBody := anthropicRequest{
