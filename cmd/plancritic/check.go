@@ -111,14 +111,10 @@ func runCheck(planPath string, f *checkFlags) error {
 	if f.redactEnabled {
 		verbose("Redacting secrets")
 		p.Raw = redact.Redact(p.Raw)
-		for i := range p.Lines {
-			p.Lines[i] = redact.Redact(p.Lines[i])
-		}
+		p.Lines = strings.Split(p.Raw, "\n")
 		for _, cf := range contexts {
 			cf.Raw = redact.Redact(cf.Raw)
-			for j := range cf.Lines {
-				cf.Lines[j] = redact.Redact(cf.Lines[j])
-			}
+			cf.Lines = strings.Split(cf.Raw, "\n")
 		}
 	}
 
@@ -198,6 +194,7 @@ func runCheck(planPath string, f *checkFlags) error {
 		if err != nil {
 			return exitError(4, "repair LLM call failed: %v", err)
 		}
+		repairResult = llm.ExtractJSON(repairResult)
 
 		var rev2 review.Review
 		if err := json.Unmarshal([]byte(repairResult), &rev2); err != nil {

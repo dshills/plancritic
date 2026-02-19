@@ -313,14 +313,12 @@ func TestRunCheckLLMReturnsNonJSON(t *testing.T) {
 }
 
 func TestRunCheckSchemaValidationFailsRepairSucceeds(t *testing.T) {
-	// First response: missing required fields (invalid)
-	badResp := `{"summary":{"verdict":"EXECUTABLE_AS_IS","score":100,"critical_count":0,"warn_count":0,"info_count":0},"issues":[],"questions":[]}`
+	// First response: issue with invalid severity (structural error)
+	badResp := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[{"id":"I1","severity":"BOGUS","category":"CONTRADICTION","title":"t","description":"d","evidence":[{"source":"plan","path":"p","line_start":1,"line_end":1,"quote":"q"}]}],"questions":[]}`
 
-	callCount := 0
 	mock := &callCountMockProvider{
 		responses: []string{badResp, validMockResponse()},
 	}
-	_ = callCount
 
 	planPath := writeTempPlan(t, "# Plan\n")
 	f := &checkFlags{
@@ -331,14 +329,14 @@ func TestRunCheckSchemaValidationFailsRepairSucceeds(t *testing.T) {
 		provider:          mock,
 	}
 	err := runCheck(planPath, f)
-	// The first response is missing "tool" and "version" fields, so validation fails.
+	// The first response has invalid severity, so validation fails.
 	// The second response (validMockResponse) should pass.
 	assertExitCode(t, err, 0)
 }
 
 func TestRunCheckSchemaValidationFailsBothAttempts(t *testing.T) {
-	// Both responses missing required fields
-	badResp := `{"summary":{"verdict":"EXECUTABLE_AS_IS","score":100,"critical_count":0,"warn_count":0,"info_count":0},"issues":[],"questions":[]}`
+	// Both responses have structural errors (invalid severity)
+	badResp := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[{"id":"I1","severity":"BOGUS","category":"CONTRADICTION","title":"t","description":"d","evidence":[{"source":"plan","path":"p","line_start":1,"line_end":1,"quote":"q"}]}],"questions":[]}`
 
 	mock := &callCountMockProvider{
 		responses: []string{badResp, badResp},

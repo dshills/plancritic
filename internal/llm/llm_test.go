@@ -198,6 +198,16 @@ func TestExtractJSON(t *testing.T) {
 			input: "  {\"a\": 1}  ",
 			want:  `{"a": 1}`,
 		},
+		{
+			name:  "prose before code fence",
+			input: "Here is the corrected JSON:\n```json\n{\"key\": \"value\"}\n```",
+			want:  `{"key": "value"}`,
+		},
+		{
+			name:  "prose before bare fence",
+			input: "Sure, here you go:\n```\n{\"key\": \"value\"}\n```\nHope this helps!",
+			want:  `{"key": "value"}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -19,7 +19,7 @@ func Truncate(r *Review, maxIssues, maxQuestions int) {
 	truncated := false
 
 	if len(r.Issues) > maxIssues {
-		r.Issues = r.Issues[:maxIssues]
+		r.Issues = r.Issues[:maxIssues-1]
 		truncated = true
 	}
 
@@ -36,7 +36,9 @@ func Truncate(r *Review, maxIssues, maxQuestions int) {
 			Title:          "Output truncated",
 			Description:    "The number of issues or questions exceeded the configured limits. Increase limits to see all results.",
 			Recommendation: "Re-run with higher limits.",
-			Evidence:       []Evidence{},
+			Evidence: []Evidence{
+				{Source: "plan", Path: "plan", LineStart: 1, LineEnd: 1, Quote: "(truncation notice)"},
+			},
 		})
 	}
 }

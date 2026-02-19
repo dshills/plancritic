@@ -182,9 +182,9 @@ func TestTruncate(t *testing.T) {
 		Questions: make([]Question, 25),
 	}
 	Truncate(r2, 50, 20)
-	// 50 original + 1 truncation warning
-	if len(r2.Issues) != 51 {
-		t.Errorf("expected 51 issues after truncation, got %d", len(r2.Issues))
+	// 49 original + 1 truncation warning = 50 (respects maxIssues cap)
+	if len(r2.Issues) != 50 {
+		t.Errorf("expected 50 issues after truncation, got %d", len(r2.Issues))
 	}
 	if len(r2.Questions) != 20 {
 		t.Errorf("expected 20 questions after truncation, got %d", len(r2.Questions))

@@ -22,42 +22,13 @@ func (v ValidationError) Error() string {
 func Validate(r *review.Review, planLineCount int) []ValidationError {
 	var errs []ValidationError
 
-	if r.Tool == "" {
-		errs = append(errs, ValidationError{"tool", "required"})
-	}
-	if r.Version == "" {
-		errs = append(errs, ValidationError{"version", "required"})
-	}
+	// Note: tool, version, score, and severity counts are NOT validated here
+	// because the CLI tool overwrites them deterministically after validation.
+	// Validating LLM-produced values for these fields would cause unnecessary
+	// repair round-trips.
+
 	if !r.Summary.Verdict.Valid() {
 		errs = append(errs, ValidationError{"summary.verdict", fmt.Sprintf("invalid verdict: %q", r.Summary.Verdict)})
-	}
-
-	// Verify score consistency
-	expected := review.ComputeScore(r.Issues)
-	if r.Summary.Score != expected {
-		errs = append(errs, ValidationError{"summary.score", fmt.Sprintf("score %d does not match computed %d", r.Summary.Score, expected)})
-	}
-
-	// Verify severity counts
-	var crit, warn, info int
-	for _, iss := range r.Issues {
-		switch iss.Severity {
-		case review.SeverityCritical:
-			crit++
-		case review.SeverityWarn:
-			warn++
-		case review.SeverityInfo:
-			info++
-		}
-	}
-	if r.Summary.CriticalCount != crit {
-		errs = append(errs, ValidationError{"summary.critical_count", fmt.Sprintf("expected %d, got %d", crit, r.Summary.CriticalCount)})
-	}
-	if r.Summary.WarnCount != warn {
-		errs = append(errs, ValidationError{"summary.warn_count", fmt.Sprintf("expected %d, got %d", warn, r.Summary.WarnCount)})
-	}
-	if r.Summary.InfoCount != info {
-		errs = append(errs, ValidationError{"summary.info_count", fmt.Sprintf("expected %d, got %d", info, r.Summary.InfoCount)})
 	}
 
 	// Validate issues

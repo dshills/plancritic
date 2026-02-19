@@ -45,21 +45,6 @@ func TestValidateValid(t *testing.T) {
 	}
 }
 
-func TestValidateMissingTool(t *testing.T) {
-	r := validReview()
-	r.Tool = ""
-	errs := Validate(r, 0)
-	found := false
-	for _, e := range errs {
-		if e.Path == "tool" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("expected error for missing tool")
-	}
-}
-
 func TestValidateInvalidVerdict(t *testing.T) {
 	r := validReview()
 	r.Summary.Verdict = "INVALID"
@@ -78,8 +63,6 @@ func TestValidateInvalidVerdict(t *testing.T) {
 func TestValidateDuplicateIssueIDs(t *testing.T) {
 	r := validReview()
 	r.Issues = append(r.Issues, r.Issues[0])
-	// Recompute score to match
-	r.Summary.Score = review.ComputeScore(r.Issues)
 	errs := Validate(r, 0)
 	found := false
 	for _, e := range errs {
@@ -117,21 +100,6 @@ func TestValidateLineExceedsPlan(t *testing.T) {
 	}
 }
 
-func TestValidateScoreMismatch(t *testing.T) {
-	r := validReview()
-	r.Summary.Score = 99 // Wrong
-	errs := Validate(r, 0)
-	found := false
-	for _, e := range errs {
-		if e.Path == "summary.score" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("expected score mismatch error")
-	}
-}
-
 func TestValidatePatches(t *testing.T) {
 	r := validReview()
 	r.Patches = []review.Patch{
@@ -141,28 +109,6 @@ func TestValidatePatches(t *testing.T) {
 	if len(errs) < 3 {
 		t.Errorf("expected at least 3 patch errors, got %d", len(errs))
 	}
-}
-
-// --- Missing top-level fields ---
-
-func TestValidateMissingVersion(t *testing.T) {
-	r := validReview()
-	r.Version = ""
-	errs := Validate(r, 0)
-	assertHasError(t, errs, "version", "")
-}
-
-// --- Severity count mismatches ---
-
-func TestValidateSeverityCountMismatches(t *testing.T) {
-	r := validReview()
-	r.Summary.CriticalCount = 99
-	r.Summary.WarnCount = 99
-	r.Summary.InfoCount = 99
-	errs := Validate(r, 0)
-	assertHasError(t, errs, "summary.critical_count", "")
-	assertHasError(t, errs, "summary.warn_count", "")
-	assertHasError(t, errs, "summary.info_count", "")
 }
 
 // --- Issue field validation ---
