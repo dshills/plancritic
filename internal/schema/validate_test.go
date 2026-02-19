@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dshills/plancritic/internal/review"
@@ -140,4 +141,166 @@ func TestValidatePatches(t *testing.T) {
 	if len(errs) < 3 {
 		t.Errorf("expected at least 3 patch errors, got %d", len(errs))
 	}
+}
+
+// --- Missing top-level fields ---
+
+func TestValidateMissingVersion(t *testing.T) {
+	r := validReview()
+	r.Version = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "version", "")
+}
+
+// --- Severity count mismatches ---
+
+func TestValidateSeverityCountMismatches(t *testing.T) {
+	r := validReview()
+	r.Summary.CriticalCount = 99
+	r.Summary.WarnCount = 99
+	r.Summary.InfoCount = 99
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "summary.critical_count", "")
+	assertHasError(t, errs, "summary.warn_count", "")
+	assertHasError(t, errs, "summary.info_count", "")
+}
+
+// --- Issue field validation ---
+
+func TestValidateIssueEmptyID(t *testing.T) {
+	r := validReview()
+	r.Issues[0].ID = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].id", "required")
+}
+
+func TestValidateIssueInvalidSeverity(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Severity = "BOGUS"
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].severity", "invalid")
+}
+
+func TestValidateIssueInvalidCategory(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Category = "NOT_A_CATEGORY"
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].category", "invalid")
+}
+
+func TestValidateIssueEmptyTitle(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Title = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].title", "required")
+}
+
+func TestValidateIssueEmptyDescription(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Description = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].description", "required")
+}
+
+func TestValidateIssueEmptyEvidence(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Evidence = []review.Evidence{}
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].evidence", "at least one")
+}
+
+// --- Question validation ---
+
+func TestValidateQuestionEmptyID(t *testing.T) {
+	r := validReview()
+	r.Questions[0].ID = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "questions[0].id", "required")
+}
+
+func TestValidateDuplicateQuestionIDs(t *testing.T) {
+	r := validReview()
+	r.Questions = append(r.Questions, r.Questions[0])
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "questions[1].id", "duplicate")
+}
+
+func TestValidateQuestionInvalidSeverity(t *testing.T) {
+	r := validReview()
+	r.Questions[0].Severity = "NOPE"
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "questions[0].severity", "invalid")
+}
+
+func TestValidateQuestionEmptyQuestion(t *testing.T) {
+	r := validReview()
+	r.Questions[0].Question = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "questions[0].question", "required")
+}
+
+func TestValidateQuestionEmptyWhyNeeded(t *testing.T) {
+	r := validReview()
+	r.Questions[0].WhyNeeded = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "questions[0].why_needed", "required")
+}
+
+func TestValidateQuestionEmptyEvidence(t *testing.T) {
+	r := validReview()
+	r.Questions[0].Evidence = []review.Evidence{}
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "questions[0].evidence", "at least one")
+}
+
+// --- Evidence edge cases ---
+
+func TestValidateEvidenceEmptyPath(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Evidence[0].Path = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].evidence[0].path", "required")
+}
+
+func TestValidateEvidenceLineEndLessThanLineStart(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Evidence[0].LineStart = 10
+	r.Issues[0].Evidence[0].LineEnd = 5
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].evidence[0].line_end", "line_start")
+}
+
+func TestValidateEvidenceEmptyQuote(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Evidence[0].Quote = ""
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].evidence[0].quote", "required")
+}
+
+func TestValidateEvidenceInvalidSource(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Evidence[0].Source = "filesystem"
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].evidence[0].source", "plan")
+}
+
+func TestValidateEvidenceLineStartZero(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Evidence[0].LineStart = 0
+	errs := Validate(r, 0)
+	assertHasError(t, errs, "issues[0].evidence[0].line_start", ">= 1")
+}
+
+// --- helper ---
+
+func assertHasError(t *testing.T, errs []ValidationError, path, msgSubstring string) {
+	t.Helper()
+	for _, e := range errs {
+		if e.Path == path {
+			if msgSubstring == "" || strings.Contains(e.Message, msgSubstring) {
+				return
+			}
+		}
+	}
+	t.Errorf("expected validation error at path %q containing %q, got errors: %v", path, msgSubstring, errs)
 }

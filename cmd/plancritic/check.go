@@ -40,6 +40,7 @@ type checkFlags struct {
 	offline           bool
 	verbose           bool
 	debug             bool
+	provider          llm.Provider // if non-nil, used instead of ResolveProvider (for testing)
 }
 
 func newCheckCmd() *cobra.Command {
@@ -130,12 +131,16 @@ func runCheck(planPath string, f *checkFlags) error {
 
 	// 5. Resolve LLM provider
 	verbose("Resolving LLM provider")
-	provider, err := llm.ResolveProvider(f.model)
-	if err != nil {
-		if f.offline {
-			return exitError(4, "no model provider configured (--offline): %v", err)
+	provider := f.provider
+	if provider == nil {
+		var err error
+		provider, err = llm.ResolveProvider(f.model)
+		if err != nil {
+			if f.offline {
+				return exitError(4, "no model provider configured (--offline): %v", err)
+			}
+			return exitError(4, "model provider error: %v", err)
 		}
-		return exitError(4, "model provider error: %v", err)
 	}
 	verbose("Using provider: %s", provider.Name())
 
