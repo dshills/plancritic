@@ -10,7 +10,7 @@ import (
 
 func TestResolveProviderAnthropicPrefix(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, err := ResolveProvider("anthropic:claude-sonnet-4-20250514")
+	p, err := ResolveProvider("anthropic:claude-sonnet-4-6-20250514")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestResolveProviderAnthropicPrefix(t *testing.T) {
 
 func TestResolveProviderClaudePrefix(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, err := ResolveProvider("claude-sonnet-4-20250514")
+	p, err := ResolveProvider("claude-sonnet-4-6-20250514")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestResolveProviderClaudePrefix(t *testing.T) {
 
 func TestResolveProviderOpenAIPrefix(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
-	p, err := ResolveProvider("openai:gpt-4o")
+	p, err := ResolveProvider("openai:gpt-5.2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestResolveProviderOpenAIPrefix(t *testing.T) {
 
 func TestResolveProviderGPTPrefix(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
-	p, err := ResolveProvider("gpt-4o")
+	p, err := ResolveProvider("gpt-5.2")
 	if err != nil {
 		t.Fatal(err)
 	}

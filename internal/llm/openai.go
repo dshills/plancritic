@@ -12,7 +12,7 @@ import (
 
 const (
 	openaiAPIURL       = "https://api.openai.com/v1/chat/completions"
-	openaiDefaultModel = "gpt-4o"
+	openaiDefaultModel = "gpt-5.2"
 )
 
 // OpenAIProvider implements Provider using the OpenAI Chat Completions API.

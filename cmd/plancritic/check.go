@@ -62,7 +62,7 @@ func newCheckCmd() *cobra.Command {
 	flags.StringSliceVar(&f.contextPaths, "context", nil, "Context file paths (may be repeated)")
 	flags.StringVar(&f.profileName, "profile", "general", "Profile name")
 	flags.BoolVar(&f.strict, "strict", false, "Enable strict grounding mode")
-	flags.StringVar(&f.model, "model", "", "Model ID (e.g., claude-sonnet-4-20250514, gpt-4o)")
+	flags.StringVar(&f.model, "model", "", "Model ID (e.g., claude-sonnet-4-6-20250514, gpt-5.2)")
 	flags.IntVar(&f.maxTokens, "max-tokens", 4096, "Max response tokens")
 	flags.Float64Var(&f.temperature, "temperature", 0.2, "Model temperature")
 	flags.IntVar(&f.seed, "seed", 0, "Random seed (if supported)")
