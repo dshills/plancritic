@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	pctx "github.com/dshills/plancritic/internal/context"
 	"github.com/dshills/plancritic/internal/llm"
@@ -32,6 +33,10 @@ type checkFlags struct {
 	providerName      string
 	model             string
 	maxTokens         int
+	maxIssues         int
+	maxQuestions      int
+	maxInputTokens    int
+	timeout           string
 	temperature       float64
 	seed              int
 	hasSeed           bool
@@ -67,6 +72,10 @@ func newCheckCmd() *cobra.Command {
 	flags.StringVar(&f.providerName, "provider", envStr("PLANCRITIC_PROVIDER", ""), "LLM provider: anthropic, openai, or gemini")
 	flags.StringVar(&f.model, "model", envStr("PLANCRITIC_MODEL", ""), "Model ID (e.g., claude-sonnet-4-6, gpt-5.2)")
 	flags.IntVar(&f.maxTokens, "max-tokens", envInt("PLANCRITIC_MAX_TOKENS", 4096), "Max response tokens")
+	flags.IntVar(&f.maxIssues, "max-issues", envInt("PLANCRITIC_MAX_ISSUES", 50), "Max issues to return")
+	flags.IntVar(&f.maxQuestions, "max-questions", envInt("PLANCRITIC_MAX_QUESTIONS", 20), "Max questions to return")
+	flags.IntVar(&f.maxInputTokens, "max-input-tokens", envInt("PLANCRITIC_MAX_INPUT_TOKENS", 0), "Max estimated input tokens (0=unlimited)")
+	flags.StringVar(&f.timeout, "timeout", envStr("PLANCRITIC_TIMEOUT", "5m"), "HTTP timeout for LLM requests (e.g., 5m, 10m)")
 	flags.Float64Var(&f.temperature, "temperature", envFloat("PLANCRITIC_TEMPERATURE", 0.2), "Model temperature")
 	flags.IntVar(&f.seed, "seed", 0, "Random seed (if supported)")
 	flags.StringVar(&f.severityThreshold, "severity-threshold", envStr("PLANCRITIC_SEVERITY_THRESHOLD", "info"), "Minimum severity: info, warn, or critical")
@@ -143,18 +152,47 @@ func runCheck(planPath string, f *checkFlags) error {
 	}
 	verbose("Using provider: %s", provider.Name())
 
-	// 6. Build prompt
+	// 6b. Parse timeout
+	timeoutStr := f.timeout
+	if timeoutStr == "" {
+		timeoutStr = "5m"
+	}
+	timeout, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		return exitError(3, "invalid --timeout value %q: %v", f.timeout, err)
+	}
+
+	// 7. Build prompt
+	maxIssues := f.maxIssues
+	if maxIssues <= 0 {
+		maxIssues = review.DefaultMaxIssues
+	}
+	maxQuestions := f.maxQuestions
+	if maxQuestions <= 0 {
+		maxQuestions = review.DefaultMaxQuestions
+	}
 	promptText := prompt.Build(prompt.BuildOpts{
 		Plan:         p,
 		Contexts:     contexts,
 		Profile:      prof,
 		Strict:       f.strict,
 		StepIDs:      stepIDs,
-		MaxIssues:    review.DefaultMaxIssues,
-		MaxQuestions: review.DefaultMaxQuestions,
+		MaxIssues:    maxIssues,
+		MaxQuestions: maxQuestions,
 	})
 
-	// 7. Debug output
+	// 7b. Prompt size check
+	estimatedTokens := len(promptText) / estimatedCharsPerToken
+	verbose("Prompt size: %d chars (~%d estimated tokens)", len(promptText), estimatedTokens)
+	if estimatedTokens > 100000 {
+		verbose("WARNING: prompt is very large (~%dk tokens), request may be slow or fail", estimatedTokens/1000)
+	}
+	if f.maxInputTokens > 0 && estimatedTokens > f.maxInputTokens {
+		return exitError(3, "estimated prompt size ~%d tokens exceeds --max-input-tokens=%d (plan: %d lines, context files: %d). Reduce context, lower --max-issues/--max-questions, or raise the limit",
+			estimatedTokens, f.maxInputTokens, len(p.Lines), len(contexts))
+	}
+
+	// 8. Debug output
 	if f.debug {
 		debugPath := "plancritic-debug-prompt.txt"
 		verbose("Writing debug prompt to %s", debugPath)
@@ -163,8 +201,8 @@ func runCheck(planPath string, f *checkFlags) error {
 		}
 	}
 
-	// 8. Call LLM
-	verbose("Calling LLM...")
+	// 9. Call LLM
+	verbose("Calling LLM (timeout: %s)...", timeout)
 	settings := llm.Settings{
 		Model:       f.model,
 		Temperature: f.temperature,
@@ -174,7 +212,9 @@ func runCheck(planPath string, f *checkFlags) error {
 		settings.Seed = &f.seed
 	}
 
-	result, err := provider.Generate(context.Background(), promptText, settings)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	result, err := provider.Generate(ctx, promptText, settings)
 	if err != nil {
 		return exitError(4, "LLM call failed: %v", err)
 	}
@@ -237,7 +277,7 @@ func runCheck(planPath string, f *checkFlags) error {
 	// 11. Post-process
 	review.SortIssues(rev.Issues)
 	review.SortQuestions(rev.Questions)
-	review.Truncate(&rev, review.DefaultMaxIssues, review.DefaultMaxQuestions)
+	review.Truncate(&rev, maxIssues, maxQuestions)
 
 	// Strict grounding post-check
 	if f.strict {
@@ -426,6 +466,10 @@ func envFloat(key string, fallback float64) float64 {
 	}
 	return f
 }
+
+// estimatedCharsPerToken is a rough heuristic for converting prompt
+// character count to an approximate token count across LLM providers.
+const estimatedCharsPerToken = 4
 
 var validFailOnValues = map[string]int{
 	"executable":     0,
