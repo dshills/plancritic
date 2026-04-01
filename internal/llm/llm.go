@@ -50,3 +50,40 @@ func stripFence(s string) string {
 	}
 	return strings.TrimSpace(s)
 }
+
+// SanitizeJSON fixes common LLM JSON issues such as invalid escape sequences
+// (e.g., \s, \d, \w from regex patterns) by double-escaping the backslash.
+// It correctly preserves already-escaped sequences like \\s.
+func SanitizeJSON(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] != '\\' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		// We have a backslash at position i
+		if i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		next := s[i+1]
+		switch next {
+		case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+			// Valid JSON escape — pass through as-is
+			b.WriteByte(s[i])
+			b.WriteByte(next)
+			i += 2
+		default:
+			// Invalid escape like \s, \d, \w — double the backslash
+			b.WriteByte('\\')
+			b.WriteByte('\\')
+			b.WriteByte(next)
+			i += 2
+		}
+	}
+	return b.String()
+}

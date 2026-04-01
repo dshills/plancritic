@@ -434,6 +434,55 @@ func TestGeminiSeedPassthrough(t *testing.T) {
 	}
 }
 
+// --- SanitizeJSON tests ---
+
+func TestSanitizeJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "valid JSON unchanged",
+			input: `{"key": "value"}`,
+			want:  `{"key": "value"}`,
+		},
+		{
+			name:  "valid escapes preserved",
+			input: `{"key": "line1\nline2\ttab\\backslash\"quote"}`,
+			want:  `{"key": "line1\nline2\ttab\\backslash\"quote"}`,
+		},
+		{
+			name:  "invalid \\s escaped",
+			input: `{"pattern": "\\s+"}`,
+			want:  `{"pattern": "\\s+"}`,
+		},
+		{
+			name:  "bare invalid escape",
+			input: `{"regex": "\s\d\w"}`,
+			want:  `{"regex": "\\s\\d\\w"}`,
+		},
+		{
+			name:  "mixed valid and invalid",
+			input: `{"msg": "line\nnew\sthing"}`,
+			want:  `{"msg": "line\nnew\\sthing"}`,
+		},
+		{
+			name:  "unicode escape preserved",
+			input: `{"char": "\u0041"}`,
+			want:  `{"char": "\u0041"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeJSON(tt.input)
+			if got != tt.want {
+				t.Errorf("SanitizeJSON(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- ExtractJSON table-driven tests ---
 
 func TestExtractJSON(t *testing.T) {

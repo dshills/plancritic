@@ -107,7 +107,9 @@ func BuildRepair(originalOutput string, errors []schema.ValidationError) string 
 	for _, e := range errors {
 		fmt.Fprintf(&b, "- %s: %s\n", e.Path, e.Message)
 	}
-	b.WriteString("\n## Original Output\n\n```json\n")
+	b.WriteString("\n")
+	b.WriteString(schemaDefinition)
+	b.WriteString("\n\n## Original Output\n\n```json\n")
 	b.WriteString(originalOutput)
 	b.WriteString("\n```\n\nReturn ONLY the corrected JSON. No prose.\n")
 	return b.String()

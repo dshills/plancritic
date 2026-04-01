@@ -180,11 +180,25 @@ func runCheck(planPath string, f *checkFlags) error {
 	}
 	verbose("Received LLM response (%d bytes)", len(result))
 
+	if f.debug {
+		debugRespPath := "plancritic-debug-response.txt"
+		verbose("Writing debug response to %s", debugRespPath)
+		if err := os.WriteFile(debugRespPath, []byte(result), 0600); err != nil {
+			verbose("Warning: failed to write debug response: %v", err)
+		}
+	}
+
 	// 9. Parse JSON
 	result = llm.ExtractJSON(result)
 	var rev review.Review
 	if err := json.Unmarshal([]byte(result), &rev); err != nil {
-		return exitError(5, "failed to parse LLM response as JSON: %v", err)
+		// Try sanitizing invalid escape sequences (common with Gemini)
+		sanitized := llm.SanitizeJSON(result)
+		if err2 := json.Unmarshal([]byte(sanitized), &rev); err2 != nil {
+			return exitError(5, "failed to parse LLM response as JSON: %v (pre-sanitize: %v)", err2, err)
+		}
+		verbose("Sanitized invalid JSON escape sequences")
+		result = sanitized
 	}
 
 	// 10. Validate
@@ -201,7 +215,10 @@ func runCheck(planPath string, f *checkFlags) error {
 
 		var rev2 review.Review
 		if err := json.Unmarshal([]byte(repairResult), &rev2); err != nil {
-			return exitError(5, "repair response is not valid JSON: %v", err)
+			sanitized := llm.SanitizeJSON(repairResult)
+			if err2 := json.Unmarshal([]byte(sanitized), &rev2); err2 != nil {
+				return exitError(5, "repair response is not valid JSON: %v (pre-sanitize: %v)", err2, err)
+			}
 		}
 
 		validationErrs2 := schema.Validate(&rev2, len(p.Lines))
