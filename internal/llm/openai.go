@@ -74,7 +74,7 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 	if err != nil {
 		return "", fmt.Errorf("openai: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -103,11 +103,11 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 }
 
 type openaiRequest struct {
-	Model               string               `json:"model"`
-	MaxCompletionTokens int                  `json:"max_completion_tokens"`
-	Temperature         float64              `json:"temperature"`
-	Seed                *int                 `json:"seed,omitempty"`
-	Messages            []openaiMessage      `json:"messages"`
+	Model               string                `json:"model"`
+	MaxCompletionTokens int                   `json:"max_completion_tokens"`
+	Temperature         float64               `json:"temperature"`
+	Seed                *int                  `json:"seed,omitempty"`
+	Messages            []openaiMessage       `json:"messages"`
 	ResponseFormat      *openaiResponseFormat `json:"response_format,omitempty"`
 }
 

@@ -469,10 +469,8 @@ func TestRunCheckDebugWritesPromptFile(t *testing.T) {
 	planPath := writeTempPlan(t, "# Plan\n")
 
 	// Change to temp dir so debug file goes there
-	origDir, _ := os.Getwd()
 	tmpDir := t.TempDir()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	t.Chdir(tmpDir)
 
 	f := &checkFlags{
 		format:            "json",
@@ -507,9 +505,7 @@ func TestRunCheckRedactDisabled(t *testing.T) {
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
 
-	origDir, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	t.Chdir(dir)
 
 	err := runCheck(planPath, f)
 	assertExitCode(t, err, 0)
@@ -540,9 +536,14 @@ func TestRunCheckSeverityThresholdCritical(t *testing.T) {
 	err := runCheck(planPath, f)
 	assertExitCode(t, err, 0)
 
-	data, _ := os.ReadFile(outPath)
+	data, err2 := os.ReadFile(outPath)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
 	var rev review.Review
-	json.Unmarshal(data, &rev)
+	if err3 := json.Unmarshal(data, &rev); err3 != nil {
+		t.Fatal(err3)
+	}
 
 	// validMockResponse has 1 CRITICAL issue and 1 WARN question
 	// With threshold "critical", only CRITICAL items should remain

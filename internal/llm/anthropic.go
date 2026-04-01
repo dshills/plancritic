@@ -72,7 +72,7 @@ func (a *AnthropicProvider) Generate(ctx context.Context, prompt string, s Setti
 	if err != nil {
 		return "", fmt.Errorf("anthropic: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -102,10 +102,10 @@ func (a *AnthropicProvider) Generate(ctx context.Context, prompt string, s Setti
 }
 
 type anthropicRequest struct {
-	Model       string              `json:"model"`
-	MaxTokens   int                 `json:"max_tokens"`
-	Temperature *float64            `json:"temperature,omitempty"`
-	Messages    []anthropicMessage  `json:"messages"`
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	Temperature *float64           `json:"temperature,omitempty"`
+	Messages    []anthropicMessage `json:"messages"`
 }
 
 type anthropicMessage struct {

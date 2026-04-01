@@ -243,7 +243,7 @@ func TestAnthropicProviderGenerate(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -264,7 +264,7 @@ func TestOpenAIProviderGenerate(t *testing.T) {
 		}
 
 		var reqBody openaiRequest
-		json.NewDecoder(r.Body).Decode(&reqBody)
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 		if reqBody.ResponseFormat == nil || reqBody.ResponseFormat.Type != "json_object" {
 			t.Error("expected json_object response format")
 		}
@@ -275,7 +275,7 @@ func TestOpenAIProviderGenerate(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -312,7 +312,7 @@ func TestGeminiProviderGenerate(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -329,7 +329,7 @@ func TestGeminiProviderGenerate(t *testing.T) {
 func TestGeminiNon200Status(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"error": "rate limited"}`))
+		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
 	}))
 	defer srv.Close()
 
@@ -346,7 +346,7 @@ func TestGeminiNon200Status(t *testing.T) {
 func TestGeminiMalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`not json`))
+		_, _ = w.Write([]byte(`not json`))
 	}))
 	defer srv.Close()
 
@@ -364,7 +364,7 @@ func TestGeminiNoCandidates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := geminiResponse{Candidates: []geminiCandidate{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -391,7 +391,7 @@ func TestGeminiTruncation(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -409,7 +409,7 @@ func TestGeminiSeedPassthrough(t *testing.T) {
 	seed := 42
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody geminiRequest
-		json.NewDecoder(r.Body).Decode(&reqBody)
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 
 		if reqBody.GenerationConfig.Seed == nil {
 			t.Error("expected seed to be set")
@@ -423,7 +423,7 @@ func TestGeminiSeedPassthrough(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -547,7 +547,7 @@ func TestExtractJSON(t *testing.T) {
 func TestAnthropicNon200Status(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"error": "rate limited"}`))
+		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
 	}))
 	defer srv.Close()
 
@@ -564,7 +564,7 @@ func TestAnthropicNon200Status(t *testing.T) {
 func TestAnthropicMalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`not json at all`))
+		_, _ = w.Write([]byte(`not json at all`))
 	}))
 	defer srv.Close()
 
@@ -587,7 +587,7 @@ func TestAnthropicTruncation(t *testing.T) {
 			StopReason: "max_tokens",
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -609,7 +609,7 @@ func TestAnthropicNoTextContent(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -629,7 +629,7 @@ func TestAnthropicEmptyContentBlocks(t *testing.T) {
 			Content: []anthropicContentBlock{},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -648,7 +648,7 @@ func TestAnthropicEmptyContentBlocks(t *testing.T) {
 func TestOpenAINon200Status(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "server error"}`))
+		_, _ = w.Write([]byte(`{"error": "server error"}`))
 	}))
 	defer srv.Close()
 
@@ -665,7 +665,7 @@ func TestOpenAINon200Status(t *testing.T) {
 func TestOpenAIMalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`not json`))
+		_, _ = w.Write([]byte(`not json`))
 	}))
 	defer srv.Close()
 
@@ -683,7 +683,7 @@ func TestOpenAIEmptyChoices(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := openaiResponse{Choices: []openaiChoice{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -708,7 +708,7 @@ func TestOpenAITruncation(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -726,7 +726,7 @@ func TestOpenAISeedPassthrough(t *testing.T) {
 	seed := 42
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody openaiRequest
-		json.NewDecoder(r.Body).Decode(&reqBody)
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 
 		if reqBody.Seed == nil {
 			t.Error("expected seed to be set in request")
@@ -740,7 +740,7 @@ func TestOpenAISeedPassthrough(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -754,7 +754,7 @@ func TestOpenAISeedPassthrough(t *testing.T) {
 func TestOpenAISeedOmittedWhenNil(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var raw map[string]json.RawMessage
-		json.NewDecoder(r.Body).Decode(&raw)
+		_ = json.NewDecoder(r.Body).Decode(&raw)
 
 		if _, hasSeed := raw["seed"]; hasSeed {
 			t.Error("seed should be omitted from request when nil")
@@ -766,7 +766,7 @@ func TestOpenAISeedOmittedWhenNil(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
