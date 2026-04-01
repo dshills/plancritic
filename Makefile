@@ -1,16 +1,19 @@
-.PHONY: build test lint install clean
+.PHONY: help build test lint install clean
 
-build:
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
+
+build: ## Build the plancritic binary
 	go build -o plancritic ./cmd/plancritic
 
-test:
+test: ## Run all tests
 	go test ./...
 
-lint:
+lint: ## Run golangci-lint
 	golangci-lint run
 
-install:
+install: ## Install plancritic to GOPATH/bin
 	go install ./cmd/plancritic
 
-clean:
+clean: ## Remove build artifacts
 	rm -f plancritic
