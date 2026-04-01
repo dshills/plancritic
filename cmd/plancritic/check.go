@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	pctx "github.com/dshills/plancritic/internal/context"
@@ -28,6 +29,7 @@ type checkFlags struct {
 	contextPaths      []string
 	profileName       string
 	strict            bool
+	providerName      string
 	model             string
 	maxTokens         int
 	temperature       float64
@@ -57,19 +59,20 @@ func newCheckCmd() *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.StringVar(&f.format, "format", "json", "Output format: json or md")
+	flags.StringVar(&f.format, "format", envStr("PLANCRITIC_FORMAT", "json"), "Output format: json or md")
 	flags.StringVar(&f.out, "out", "", "Output file path (default: stdout)")
 	flags.StringSliceVar(&f.contextPaths, "context", nil, "Context file paths (may be repeated)")
-	flags.StringVar(&f.profileName, "profile", "general", "Profile name")
-	flags.BoolVar(&f.strict, "strict", false, "Enable strict grounding mode")
-	flags.StringVar(&f.model, "model", "", "Model ID (e.g., claude-sonnet-4-6, gpt-5.2)")
-	flags.IntVar(&f.maxTokens, "max-tokens", 4096, "Max response tokens")
-	flags.Float64Var(&f.temperature, "temperature", 0.2, "Model temperature")
+	flags.StringVar(&f.profileName, "profile", envStr("PLANCRITIC_PROFILE", "general"), "Profile name")
+	flags.BoolVar(&f.strict, "strict", envBool("PLANCRITIC_STRICT", false), "Enable strict grounding mode")
+	flags.StringVar(&f.providerName, "provider", envStr("PLANCRITIC_PROVIDER", ""), "LLM provider: anthropic, openai, or gemini")
+	flags.StringVar(&f.model, "model", envStr("PLANCRITIC_MODEL", ""), "Model ID (e.g., claude-sonnet-4-6, gpt-5.2)")
+	flags.IntVar(&f.maxTokens, "max-tokens", envInt("PLANCRITIC_MAX_TOKENS", 4096), "Max response tokens")
+	flags.Float64Var(&f.temperature, "temperature", envFloat("PLANCRITIC_TEMPERATURE", 0.2), "Model temperature")
 	flags.IntVar(&f.seed, "seed", 0, "Random seed (if supported)")
-	flags.StringVar(&f.severityThreshold, "severity-threshold", "info", "Minimum severity: info, warn, or critical")
+	flags.StringVar(&f.severityThreshold, "severity-threshold", envStr("PLANCRITIC_SEVERITY_THRESHOLD", "info"), "Minimum severity: info, warn, or critical")
 	flags.StringVar(&f.patchOut, "patch-out", "", "Write suggested patches as unified diff")
-	flags.StringVar(&f.failOn, "fail-on", "", "Exit non-zero if verdict meets this level")
-	flags.BoolVar(&f.redactEnabled, "redact", true, "Redact secrets before sending to model")
+	flags.StringVar(&f.failOn, "fail-on", envStr("PLANCRITIC_FAIL_ON", ""), "Exit non-zero if verdict meets this level")
+	flags.BoolVar(&f.redactEnabled, "redact", envBool("PLANCRITIC_REDACT", true), "Redact secrets before sending to model")
 	flags.BoolVar(&f.verbose, "verbose", false, "Print processing steps to stderr")
 	flags.BoolVar(&f.debug, "debug", false, "Save prompt to debug file")
 
@@ -133,7 +136,7 @@ func runCheck(planPath string, f *checkFlags) error {
 	provider := f.provider
 	if provider == nil {
 		var err error
-		provider, err = llm.ResolveProvider(f.model)
+		provider, err = llm.ResolveProvider(f.providerName, f.model)
 		if err != nil {
 			return exitError(4, "model provider error: %v", err)
 		}
@@ -148,7 +151,7 @@ func runCheck(planPath string, f *checkFlags) error {
 		Strict:       f.strict,
 		StepIDs:      stepIDs,
 		MaxIssues:    review.DefaultMaxIssues,
-		MaxQuestions:  review.DefaultMaxQuestions,
+		MaxQuestions: review.DefaultMaxQuestions,
 	})
 
 	// 7. Debug output
@@ -358,6 +361,53 @@ func severityThresholdOrder(threshold string) int {
 	default:
 		return 2 // info shows everything
 	}
+}
+
+// envStr returns the value of the environment variable key, or fallback if unset/empty.
+func envStr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// envBool returns the boolean value of the environment variable key, or fallback if unset/invalid.
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
+}
+
+// envInt returns the integer value of the environment variable key, or fallback if unset/invalid.
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+// envFloat returns the float64 value of the environment variable key, or fallback if unset/invalid.
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 var validFailOnValues = map[string]int{

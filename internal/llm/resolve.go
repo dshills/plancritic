@@ -7,9 +7,46 @@ import (
 	"strings"
 )
 
-// ResolveProvider selects an LLM provider based on the model flag and available API keys.
-func ResolveProvider(modelFlag string) (Provider, error) {
-	// Explicit provider from model flag
+// ResolveProvider selects an LLM provider based on the provider flag, model flag,
+// and available API keys (in that priority order).
+func ResolveProvider(providerFlag, modelFlag string) (Provider, error) {
+	// Explicit --provider flag takes highest priority
+	if providerFlag != "" {
+		model := stripProviderPrefix(modelFlag)
+		switch strings.ToLower(providerFlag) {
+		case "anthropic":
+			p, err := NewAnthropic()
+			if err != nil {
+				return nil, err
+			}
+			if model != "" {
+				return &modelOverride{Provider: p, model: model}, nil
+			}
+			return p, nil
+		case "openai":
+			p, err := NewOpenAI()
+			if err != nil {
+				return nil, err
+			}
+			if model != "" {
+				return &modelOverride{Provider: p, model: model}, nil
+			}
+			return p, nil
+		case "gemini", "google":
+			p, err := NewGemini()
+			if err != nil {
+				return nil, err
+			}
+			if model != "" {
+				return &modelOverride{Provider: p, model: model}, nil
+			}
+			return p, nil
+		default:
+			return nil, fmt.Errorf("unknown provider: %q (valid: anthropic, openai, gemini)", providerFlag)
+		}
+	}
+
+	// Infer provider from model flag prefix
 	if modelFlag != "" {
 		lower := strings.ToLower(modelFlag)
 		switch {
@@ -40,6 +77,20 @@ func ResolveProvider(modelFlag string) (Provider, error) {
 				return nil, err
 			}
 			return &modelOverride{Provider: p, model: modelFlag}, nil
+
+		case strings.HasPrefix(lower, "gemini:"):
+			p, err := NewGemini()
+			if err != nil {
+				return nil, err
+			}
+			return &modelOverride{Provider: p, model: strings.TrimPrefix(modelFlag, "gemini:")}, nil
+
+		case strings.HasPrefix(lower, "gemini"):
+			p, err := NewGemini()
+			if err != nil {
+				return nil, err
+			}
+			return &modelOverride{Provider: p, model: modelFlag}, nil
 		}
 	}
 
@@ -50,8 +101,11 @@ func ResolveProvider(modelFlag string) (Provider, error) {
 	if os.Getenv("OPENAI_API_KEY") != "" {
 		return NewOpenAI()
 	}
+	if os.Getenv("GEMINI_API_KEY") != "" {
+		return NewGemini()
+	}
 
-	return nil, fmt.Errorf("no LLM provider configured: set ANTHROPIC_API_KEY or OPENAI_API_KEY")
+	return nil, fmt.Errorf("no LLM provider configured: set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY, or use --provider")
 }
 
 // modelOverride wraps a provider to override the model in settings.
@@ -63,4 +117,14 @@ type modelOverride struct {
 func (m *modelOverride) Generate(ctx context.Context, prompt string, s Settings) (string, error) {
 	s.Model = m.model
 	return m.Provider.Generate(ctx, prompt, s)
+}
+
+// stripProviderPrefix removes a leading "provider:" prefix from a model name.
+func stripProviderPrefix(model string) string {
+	for _, prefix := range []string{"anthropic:", "openai:", "gemini:"} {
+		if strings.HasPrefix(strings.ToLower(model), prefix) {
+			return model[len(prefix):]
+		}
+	}
+	return model
 }

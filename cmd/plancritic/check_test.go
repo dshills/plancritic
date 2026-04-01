@@ -186,10 +186,10 @@ func TestRunCheckFailOnUnrecognized(t *testing.T) {
 func validMockResponse() string {
 	issues := []review.Issue{
 		{
-			ID:       "ISSUE-0001",
-			Severity: review.SeverityCritical,
-			Category: review.CategoryContradiction,
-			Title:    "Test issue",
+			ID:          "ISSUE-0001",
+			Severity:    review.SeverityCritical,
+			Category:    review.CategoryContradiction,
+			Title:       "Test issue",
 			Description: "A test issue",
 			Evidence: []review.Evidence{
 				{Source: "plan", Path: "plan.md", LineStart: 1, LineEnd: 1, Quote: "test"},
@@ -585,6 +585,64 @@ func TestRunCheckWithContext(t *testing.T) {
 	}
 	err := runCheck(planPath, f)
 	assertExitCode(t, err, 0)
+}
+
+// --- env helper tests ---
+
+func TestEnvStr(t *testing.T) {
+	t.Setenv("PLANCRITIC_TEST_STR", "hello")
+	if got := envStr("PLANCRITIC_TEST_STR", "default"); got != "hello" {
+		t.Errorf("envStr = %q, want %q", got, "hello")
+	}
+	if got := envStr("PLANCRITIC_TEST_UNSET", "default"); got != "default" {
+		t.Errorf("envStr = %q, want %q", got, "default")
+	}
+}
+
+func TestEnvBool(t *testing.T) {
+	t.Setenv("PLANCRITIC_TEST_BOOL", "true")
+	if got := envBool("PLANCRITIC_TEST_BOOL", false); !got {
+		t.Error("envBool = false, want true")
+	}
+	t.Setenv("PLANCRITIC_TEST_BOOL", "false")
+	if got := envBool("PLANCRITIC_TEST_BOOL", true); got {
+		t.Error("envBool = true, want false")
+	}
+	if got := envBool("PLANCRITIC_TEST_UNSET", true); !got {
+		t.Error("envBool fallback = false, want true")
+	}
+	t.Setenv("PLANCRITIC_TEST_BOOL", "invalid")
+	if got := envBool("PLANCRITIC_TEST_BOOL", true); !got {
+		t.Error("envBool invalid = false, want fallback true")
+	}
+}
+
+func TestEnvInt(t *testing.T) {
+	t.Setenv("PLANCRITIC_TEST_INT", "8192")
+	if got := envInt("PLANCRITIC_TEST_INT", 4096); got != 8192 {
+		t.Errorf("envInt = %d, want 8192", got)
+	}
+	if got := envInt("PLANCRITIC_TEST_UNSET", 4096); got != 4096 {
+		t.Errorf("envInt fallback = %d, want 4096", got)
+	}
+	t.Setenv("PLANCRITIC_TEST_INT", "bad")
+	if got := envInt("PLANCRITIC_TEST_INT", 4096); got != 4096 {
+		t.Errorf("envInt invalid = %d, want fallback 4096", got)
+	}
+}
+
+func TestEnvFloat(t *testing.T) {
+	t.Setenv("PLANCRITIC_TEST_FLOAT", "0.5")
+	if got := envFloat("PLANCRITIC_TEST_FLOAT", 0.2); got != 0.5 {
+		t.Errorf("envFloat = %f, want 0.5", got)
+	}
+	if got := envFloat("PLANCRITIC_TEST_UNSET", 0.2); got != 0.2 {
+		t.Errorf("envFloat fallback = %f, want 0.2", got)
+	}
+	t.Setenv("PLANCRITIC_TEST_FLOAT", "bad")
+	if got := envFloat("PLANCRITIC_TEST_FLOAT", 0.2); got != 0.2 {
+		t.Errorf("envFloat invalid = %f, want fallback 0.2", got)
+	}
 }
 
 // callCountMockProvider returns different responses on successive calls.

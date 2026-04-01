@@ -111,7 +111,7 @@ func TestIntegrationAnthropic(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set")
 	}
 
-	provider, err := llm.ResolveProvider("anthropic:claude-sonnet-4-6")
+	provider, err := llm.ResolveProvider("", "anthropic:claude-sonnet-4-6")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestIntegrationOpenAI(t *testing.T) {
 		t.Skip("OPENAI_API_KEY not set")
 	}
 
-	provider, err := llm.ResolveProvider("openai:gpt-5.2")
+	provider, err := llm.ResolveProvider("", "openai:gpt-5.2")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestIntegrationAnthropicWithContext(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set")
 	}
 
-	provider, err := llm.ResolveProvider("anthropic:claude-sonnet-4-6")
+	provider, err := llm.ResolveProvider("", "anthropic:claude-sonnet-4-6")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestIntegrationOpenAIWithContext(t *testing.T) {
 		t.Skip("OPENAI_API_KEY not set")
 	}
 
-	provider, err := llm.ResolveProvider("openai:gpt-5.2")
+	provider, err := llm.ResolveProvider("", "openai:gpt-5.2")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestIntegrationAnthropicGoProfile(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set")
 	}
 
-	provider, err := llm.ResolveProvider("anthropic:claude-sonnet-4-6")
+	provider, err := llm.ResolveProvider("", "anthropic:claude-sonnet-4-6")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestIntegrationOpenAIGoProfile(t *testing.T) {
 		t.Skip("OPENAI_API_KEY not set")
 	}
 
-	provider, err := llm.ResolveProvider("openai:gpt-5.2")
+	provider, err := llm.ResolveProvider("", "openai:gpt-5.2")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestIntegrationAnthropicStrict(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set")
 	}
 
-	provider, err := llm.ResolveProvider("anthropic:claude-sonnet-4-6")
+	provider, err := llm.ResolveProvider("", "anthropic:claude-sonnet-4-6")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestIntegrationOpenAIStrict(t *testing.T) {
 		t.Skip("OPENAI_API_KEY not set")
 	}
 
-	provider, err := llm.ResolveProvider("openai:gpt-5.2")
+	provider, err := llm.ResolveProvider("", "openai:gpt-5.2")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestIntegrationPostProcessing(t *testing.T) {
 	skipUnlessIntegration(t)
 	t.Parallel()
 
-	provider, err := llm.ResolveProvider("")
+	provider, err := llm.ResolveProvider("", "")
 	if err != nil {
 		t.Fatalf("resolve provider: %v", err)
 	}

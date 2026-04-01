@@ -11,7 +11,7 @@ import (
 
 func TestResolveProviderAnthropicPrefix(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, err := ResolveProvider("anthropic:claude-sonnet-4-6")
+	p, err := ResolveProvider("", "anthropic:claude-sonnet-4-6")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestResolveProviderAnthropicPrefix(t *testing.T) {
 
 func TestResolveProviderClaudePrefix(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, err := ResolveProvider("claude-sonnet-4-6")
+	p, err := ResolveProvider("", "claude-sonnet-4-6")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestResolveProviderClaudePrefix(t *testing.T) {
 
 func TestResolveProviderOpenAIPrefix(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
-	p, err := ResolveProvider("openai:gpt-5.2")
+	p, err := ResolveProvider("", "openai:gpt-5.2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestResolveProviderOpenAIPrefix(t *testing.T) {
 
 func TestResolveProviderGPTPrefix(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
-	p, err := ResolveProvider("gpt-5.2")
+	p, err := ResolveProvider("", "gpt-5.2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestResolveProviderGPTPrefix(t *testing.T) {
 
 func TestResolveProviderAutoDetectAnthropic(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	p, err := ResolveProvider("")
+	p, err := ResolveProvider("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestResolveProviderAutoDetectAnthropic(t *testing.T) {
 func TestResolveProviderAutoDetectOpenAI(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "test-key")
-	p, err := ResolveProvider("")
+	p, err := ResolveProvider("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,9 +79,138 @@ func TestResolveProviderAutoDetectOpenAI(t *testing.T) {
 func TestResolveProviderNone(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
-	_, err := ResolveProvider("")
+	t.Setenv("GEMINI_API_KEY", "")
+	_, err := ResolveProvider("", "")
 	if err == nil {
 		t.Error("expected error when no API keys set")
+	}
+}
+
+func TestResolveProviderFlagAnthropic(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	p, err := ResolveProvider("anthropic", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "anthropic" {
+		t.Errorf("expected anthropic, got %s", p.Name())
+	}
+}
+
+func TestResolveProviderFlagOpenAI(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	p, err := ResolveProvider("openai", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "openai" {
+		t.Errorf("expected openai, got %s", p.Name())
+	}
+}
+
+func TestResolveProviderFlagWithModel(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	p, err := ResolveProvider("anthropic", "claude-opus-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "anthropic" {
+		t.Errorf("expected anthropic, got %s", p.Name())
+	}
+}
+
+func TestResolveProviderFlagOverridesModelPrefix(t *testing.T) {
+	// --provider=openai should win even if model looks like "claude-..."
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	p, err := ResolveProvider("openai", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "openai" {
+		t.Errorf("expected openai (from --provider flag), got %s", p.Name())
+	}
+}
+
+func TestResolveProviderFlagStripsRedundantPrefix(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	// --provider=anthropic --model=anthropic:claude-sonnet-4-6 should strip the prefix
+	p, err := ResolveProvider("anthropic", "anthropic:claude-sonnet-4-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mo, ok := p.(*modelOverride)
+	if !ok {
+		t.Fatal("expected modelOverride wrapper")
+	}
+	if mo.model != "claude-sonnet-4-6" {
+		t.Errorf("expected model 'claude-sonnet-4-6', got %q", mo.model)
+	}
+}
+
+func TestResolveProviderFlagGemini(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	p, err := ResolveProvider("gemini", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "gemini" {
+		t.Errorf("expected gemini, got %s", p.Name())
+	}
+}
+
+func TestResolveProviderFlagGoogle(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	p, err := ResolveProvider("google", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "gemini" {
+		t.Errorf("expected gemini, got %s", p.Name())
+	}
+}
+
+func TestResolveProviderGeminiPrefix(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	p, err := ResolveProvider("", "gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "gemini" {
+		t.Errorf("expected gemini, got %s", p.Name())
+	}
+}
+
+func TestResolveProviderGeminiExplicitPrefix(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	p, err := ResolveProvider("", "gemini:gemini-2.5-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "gemini" {
+		t.Errorf("expected gemini, got %s", p.Name())
+	}
+}
+
+func TestResolveProviderAutoDetectGemini(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	p, err := ResolveProvider("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "gemini" {
+		t.Errorf("expected gemini, got %s", p.Name())
+	}
+}
+
+func TestResolveProviderFlagUnknown(t *testing.T) {
+	_, err := ResolveProvider("azure", "")
+	if err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+	if !strings.Contains(err.Error(), "unknown provider") {
+		t.Errorf("expected 'unknown provider' error, got: %s", err.Error())
 	}
 }
 
@@ -157,6 +286,151 @@ func TestOpenAIProviderGenerate(t *testing.T) {
 	}
 	if got != `{"result": "ok"}` {
 		t.Errorf("unexpected response: %s", got)
+	}
+}
+
+func TestGeminiProviderGenerate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Error("missing Content-Type header")
+		}
+		// Verify API key is in the URL query param
+		if r.URL.Query().Get("key") != "test-key" {
+			t.Error("missing API key in URL")
+		}
+
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{
+					Content: geminiContent{
+						Parts: []geminiPart{
+							{Text: `{"result": "ok"}`},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	got, err := p.Generate(context.Background(), "test prompt", Settings{Temperature: 0.2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != `{"result": "ok"}` {
+		t.Errorf("unexpected response: %s", got)
+	}
+}
+
+func TestGeminiNon200Status(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error": "rate limited"}`))
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	if err == nil {
+		t.Fatal("expected error for non-200 status")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Errorf("error should contain status code 429, got: %s", err.Error())
+	}
+}
+
+func TestGeminiMalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`not json`))
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+	if !strings.Contains(err.Error(), "parse response") {
+		t.Errorf("error should mention parse, got: %s", err.Error())
+	}
+}
+
+func TestGeminiNoCandidates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := geminiResponse{Candidates: []geminiCandidate{}}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	if err == nil {
+		t.Fatal("expected error for no candidates")
+	}
+	if !strings.Contains(err.Error(), "no candidates") {
+		t.Errorf("error should mention 'no candidates', got: %s", err.Error())
+	}
+}
+
+func TestGeminiTruncation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{
+					Content: geminiContent{
+						Parts: []geminiPart{{Text: `{"partial": true}`}},
+					},
+					FinishReason: "MAX_TOKENS",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	_, err := p.Generate(context.Background(), "prompt", Settings{MaxTokens: 100})
+	if err == nil {
+		t.Fatal("expected error for truncated response")
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("error should mention 'truncated', got: %s", err.Error())
+	}
+}
+
+func TestGeminiSeedPassthrough(t *testing.T) {
+	seed := 42
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody geminiRequest
+		json.NewDecoder(r.Body).Decode(&reqBody)
+
+		if reqBody.GenerationConfig.Seed == nil {
+			t.Error("expected seed to be set")
+		} else if *reqBody.GenerationConfig.Seed != 42 {
+			t.Errorf("expected seed 42, got %d", *reqBody.GenerationConfig.Seed)
+		}
+
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{Content: geminiContent{Parts: []geminiPart{{Text: `{"ok": true}`}}}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	_, err := p.Generate(context.Background(), "prompt", Settings{Seed: &seed})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
