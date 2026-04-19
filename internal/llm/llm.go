@@ -4,6 +4,7 @@ package llm
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // Settings configures the LLM request.
@@ -12,6 +13,11 @@ type Settings struct {
 	Temperature float64
 	MaxTokens   int
 	Seed        *int
+	// CachedContentName, when set, asks the provider to reference an
+	// existing provider-side context cache by resource name (e.g.
+	// "cachedContents/abc123" for Gemini). Only honored by providers
+	// that implement CachingProvider.
+	CachedContentName string
 }
 
 // Usage reports token counts for a single request. Cache-related fields
@@ -50,6 +56,25 @@ type Segment struct {
 type SegmentedProvider interface {
 	Provider
 	GenerateSegments(ctx context.Context, segments []Segment, settings Settings) (string, Usage, error)
+}
+
+// CacheHandle identifies a provider-side context cache.
+type CacheHandle struct {
+	Name      string
+	ExpiresAt time.Time
+}
+
+// CachingProvider is an optional interface implemented by providers
+// that expose a persistent server-side context cache (e.g. Gemini
+// Context Caching). Callers type-assert and fall back to uncached
+// generation when unsupported.
+type CachingProvider interface {
+	SegmentedProvider
+	// CreateCache uploads the given segments as a cache resource,
+	// returning an opaque handle that can be passed back via
+	// Settings.CachedContentName on subsequent Generate calls. Providers
+	// may reject inputs below a minimum token size.
+	CreateCache(ctx context.Context, segments []Segment, model string, ttl time.Duration) (CacheHandle, error)
 }
 
 // ConcatSegments joins segments into a single prompt string.

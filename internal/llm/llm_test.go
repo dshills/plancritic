@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveProviderAnthropicPrefix(t *testing.T) {
@@ -338,6 +339,202 @@ func TestAnthropicGenerateSegmentsOmitsEmpty(t *testing.T) {
 
 func TestAnthropicImplementsSegmentedProvider(t *testing.T) {
 	var _ SegmentedProvider = (*AnthropicProvider)(nil)
+}
+
+func TestGeminiImplementsCachingProvider(t *testing.T) {
+	var _ SegmentedProvider = (*GeminiProvider)(nil)
+	var _ CachingProvider = (*GeminiProvider)(nil)
+}
+
+func TestGeminiCreateCacheRequest(t *testing.T) {
+	var captured geminiCacheCreateRequest
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := geminiCacheCreateResponse{
+			Name:       "cachedContents/test-xyz",
+			Model:      "models/gemini-2.5-flash",
+			ExpireTime: time.Now().Add(1 * time.Hour),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	// Build a cacheable prefix well above the min-size threshold.
+	prefix := strings.Repeat("static rule text. ", 400) // ~7000 chars
+	segs := []Segment{
+		{Text: prefix, CacheMark: true},
+		{Text: "uncached tail", CacheMark: false},
+	}
+
+	handle, err := p.CreateCache(context.Background(), segs, "gemini-2.5-flash", 1*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handle.Name != "cachedContents/test-xyz" {
+		t.Errorf("unexpected handle name: %q", handle.Name)
+	}
+	if !strings.Contains(gotPath, "cachedContents") {
+		t.Errorf("expected cachedContents endpoint, got path %q", gotPath)
+	}
+	if captured.Model != "models/gemini-2.5-flash" {
+		t.Errorf("model should be qualified, got %q", captured.Model)
+	}
+	if captured.TTL != "3600s" {
+		t.Errorf("expected ttl=3600s, got %q", captured.TTL)
+	}
+	if len(captured.Contents) != 1 || len(captured.Contents[0].Parts) != 1 {
+		t.Fatalf("unexpected contents shape: %+v", captured.Contents)
+	}
+	if captured.Contents[0].Parts[0].Text != prefix {
+		t.Error("cache should contain only CacheMark=true segment text")
+	}
+}
+
+func TestGeminiRejectsInterleavedCacheMarks(t *testing.T) {
+	p := &GeminiProvider{apiKey: "test-key", apiURL: "http://never-called", client: &http.Client{}}
+
+	// CreateCache: marked→unmarked→marked must error (would reorder prompt).
+	prefix := strings.Repeat("x", GeminiMinCacheChars)
+	_, err := p.CreateCache(context.Background(), []Segment{
+		{Text: prefix, CacheMark: true},
+		{Text: "middle", CacheMark: false},
+		{Text: "also cached", CacheMark: true},
+	}, "gemini-2.5-flash", 1*time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "contiguous prefix") {
+		t.Errorf("expected contiguous-prefix error from CreateCache, got: %v", err)
+	}
+
+	// GenerateSegments with CachedContentName: same rule applies.
+	_, _, err = p.GenerateSegments(context.Background(), []Segment{
+		{Text: "a", CacheMark: true},
+		{Text: "b", CacheMark: false},
+		{Text: "c", CacheMark: true},
+	}, Settings{CachedContentName: "cachedContents/x"})
+	if err == nil || !strings.Contains(err.Error(), "contiguous prefix") {
+		t.Errorf("expected contiguous-prefix error from GenerateSegments, got: %v", err)
+	}
+}
+
+func TestContiguousCachePrefixEnd(t *testing.T) {
+	cases := []struct {
+		name    string
+		segs    []Segment
+		wantEnd int
+		wantOk  bool
+	}{
+		{"all marked", []Segment{{CacheMark: true}, {CacheMark: true}}, 2, true},
+		{"prefix then tail", []Segment{{CacheMark: true}, {CacheMark: true}, {CacheMark: false}}, 2, true},
+		{"no marks", []Segment{{CacheMark: false}, {CacheMark: false}}, 0, true},
+		{"empty", nil, 0, true},
+		{"interleaved", []Segment{{CacheMark: true}, {CacheMark: false}, {CacheMark: true}}, 0, false},
+		{"trailing only", []Segment{{CacheMark: false}, {CacheMark: true}}, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			end, ok := contiguousCachePrefixEnd(tc.segs)
+			if ok != tc.wantOk || (ok && end != tc.wantEnd) {
+				t.Errorf("got (%d, %v), want (%d, %v)", end, ok, tc.wantEnd, tc.wantOk)
+			}
+		})
+	}
+}
+
+func TestGeminiCreateCacheRejectsSmallPrefix(t *testing.T) {
+	p := &GeminiProvider{apiKey: "test-key", apiURL: "http://never-called", client: &http.Client{}}
+	_, err := p.CreateCache(context.Background(), []Segment{
+		{Text: "tiny", CacheMark: true},
+	}, "gemini-2.5-flash", 1*time.Hour)
+	if err == nil {
+		t.Fatal("expected error for prefix below min size")
+	}
+	if !strings.Contains(err.Error(), "too small") {
+		t.Errorf("expected size error, got: %v", err)
+	}
+}
+
+func TestGeminiGenerateSegmentsWithCachedContent(t *testing.T) {
+	var captured geminiRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{Content: geminiContent{Parts: []geminiPart{{Text: `{"ok": true}`}}}},
+			},
+			UsageMetadata: geminiUsageMetadata{
+				PromptTokenCount:        500,
+				CandidatesTokenCount:    50,
+				CachedContentTokenCount: 3000,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	segs := []Segment{
+		{Text: "STATIC PREFIX — should NOT be re-sent", CacheMark: true},
+		{Text: "VARIABLE TAIL — should be sent", CacheMark: false},
+	}
+	_, usage, err := p.GenerateSegments(context.Background(), segs, Settings{
+		CachedContentName: "cachedContents/abc123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if captured.CachedContent != "cachedContents/abc123" {
+		t.Errorf("expected cachedContent=%q, got %q", "cachedContents/abc123", captured.CachedContent)
+	}
+	if len(captured.Contents) != 1 || len(captured.Contents[0].Parts) != 1 {
+		t.Fatalf("unexpected contents shape: %+v", captured.Contents)
+	}
+	sent := captured.Contents[0].Parts[0].Text
+	if strings.Contains(sent, "STATIC PREFIX") {
+		t.Error("cached segment must not be re-sent in contents when CachedContentName is set")
+	}
+	if !strings.Contains(sent, "VARIABLE TAIL") {
+		t.Error("variable segment should be sent in contents")
+	}
+	if usage.CacheReadInputTokens != 3000 {
+		t.Errorf("expected cache_read=3000, got %d", usage.CacheReadInputTokens)
+	}
+}
+
+func TestGeminiGenerateSegmentsWithoutCachedContent(t *testing.T) {
+	var captured geminiRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{Content: geminiContent{Parts: []geminiPart{{Text: "ok"}}}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	segs := []Segment{
+		{Text: "prefix ", CacheMark: true},
+		{Text: "tail", CacheMark: false},
+	}
+	_, _, err := p.GenerateSegments(context.Background(), segs, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if captured.CachedContent != "" {
+		t.Errorf("cachedContent must be empty when CachedContentName is unset, got %q", captured.CachedContent)
+	}
+	sent := captured.Contents[0].Parts[0].Text
+	if !strings.Contains(sent, "prefix") || !strings.Contains(sent, "tail") {
+		t.Errorf("all segments should be sent when not using cache; got %q", sent)
+	}
 }
 
 func TestOpenAIProviderGenerate(t *testing.T) {

@@ -108,6 +108,27 @@ func ResolveProvider(providerFlag, modelFlag string) (Provider, error) {
 	return nil, fmt.Errorf("no LLM provider configured: set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY, or use --provider")
 }
 
+// Unwrap returns the underlying provider if p is a wrapper (e.g. from
+// a --provider/--model override), otherwise p itself. Callers use this
+// when they need to type-assert for provider-specific capabilities such
+// as CachingProvider.
+func Unwrap(p Provider) Provider {
+	if m, ok := p.(*modelOverride); ok {
+		return m.Provider
+	}
+	return p
+}
+
+// OverrideModel returns the model set on p if p is a wrapper, or the
+// empty string otherwise. Use after Unwrap when the caller needs to
+// know the effective model for cache keying.
+func OverrideModel(p Provider) string {
+	if m, ok := p.(*modelOverride); ok {
+		return m.model
+	}
+	return ""
+}
+
 // modelOverride wraps a provider to override the model in settings.
 type modelOverride struct {
 	Provider

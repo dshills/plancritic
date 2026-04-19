@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dshills/plancritic/internal/cachestore"
 	pctx "github.com/dshills/plancritic/internal/context"
 	"github.com/dshills/plancritic/internal/llm"
 	"github.com/dshills/plancritic/internal/patch"
@@ -44,6 +47,8 @@ type checkFlags struct {
 	patchOut          string
 	failOn            string
 	redactEnabled     bool
+	noCache           bool
+	cacheTTL          string
 	verbose           bool
 	debug             bool
 	provider          llm.Provider // if non-nil, used instead of ResolveProvider (for testing)
@@ -82,6 +87,8 @@ func newCheckCmd() *cobra.Command {
 	flags.StringVar(&f.patchOut, "patch-out", "", "Write suggested patches as unified diff")
 	flags.StringVar(&f.failOn, "fail-on", envStr("PLANCRITIC_FAIL_ON", ""), "Exit non-zero if verdict meets this level")
 	flags.BoolVar(&f.redactEnabled, "redact", envBool("PLANCRITIC_REDACT", true), "Redact secrets before sending to model")
+	flags.BoolVar(&f.noCache, "no-cache", envBool("PLANCRITIC_NO_CACHE", false), "Disable prompt caching (Anthropic cache_control markers / Gemini context cache)")
+	flags.StringVar(&f.cacheTTL, "cache-ttl", envStr("PLANCRITIC_CACHE_TTL", "1h"), "TTL for provider-side context caches (Gemini only)")
 	flags.BoolVar(&f.verbose, "verbose", false, "Print processing steps to stderr")
 	flags.BoolVar(&f.debug, "debug", false, "Save prompt to debug file")
 
@@ -181,6 +188,14 @@ func runCheck(planPath string, f *checkFlags) error {
 		MaxQuestions: maxQuestions,
 	}
 	promptSegments := prompt.BuildSegments(promptOpts)
+	if f.noCache {
+		// Strip cache markers so providers (Anthropic) won't apply
+		// cache_control headers; Gemini orchestration below is also
+		// skipped when noCache is set.
+		for i := range promptSegments {
+			promptSegments[i].CacheMark = false
+		}
+	}
 	promptText := llm.ConcatSegments(promptSegments)
 
 	// 7b. Prompt size check
@@ -216,6 +231,15 @@ func runCheck(planPath string, f *checkFlags) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
+	if !f.noCache {
+		if name, err := ensureGeminiCache(ctx, provider, promptSegments, f.model, f.cacheTTL, verbose); err != nil {
+			verbose("Cache orchestration error (falling back to uncached): %v", err)
+		} else if name != "" {
+			settings.CachedContentName = name
+		}
+	}
+
 	var result string
 	var usage llm.Usage
 	if sp, ok := provider.(llm.SegmentedProvider); ok {
@@ -391,6 +415,90 @@ func (e *exitErr) Error() string { return e.msg }
 
 func exitError(code int, format string, args ...any) error {
 	return &exitErr{code: code, msg: fmt.Sprintf(format, args...)}
+}
+
+// ensureGeminiCache returns a cache resource name for the cacheable
+// portion of segments when the underlying provider supports context
+// caching and the prefix meets the provider's minimum size. Returns
+// ("", nil) when caching is not applicable (non-caching provider,
+// prefix too small, store unavailable). Cache creation failures are
+// returned as errors so the caller can log and proceed uncached.
+func ensureGeminiCache(ctx context.Context, provider llm.Provider, segments []llm.Segment, modelFlag, ttlStr string, verbose func(string, ...any)) (string, error) {
+	base := llm.Unwrap(provider)
+	cp, ok := base.(llm.CachingProvider)
+	if !ok {
+		return "", nil
+	}
+
+	var prefixLen int
+	for _, seg := range segments {
+		if seg.CacheMark {
+			prefixLen += len(seg.Text)
+		}
+	}
+	if prefixLen < llm.GeminiMinCacheChars {
+		verbose("Cache prefix too small (%d chars, need ≥%d), skipping cache", prefixLen, llm.GeminiMinCacheChars)
+		return "", nil
+	}
+
+	// Effective model: --model flag wins, then any wrapped-provider
+	// override, then the Gemini default. Normalizing the default here
+	// keeps the cache key stable across invocations where the user
+	// sometimes passes --model=<default> and sometimes omits it.
+	model := modelFlag
+	if override := llm.OverrideModel(provider); override != "" {
+		model = override
+	}
+	if model == "" {
+		model = llm.GeminiDefaultModel
+	}
+
+	ttl, err := time.ParseDuration(ttlStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid --cache-ttl %q: %w", ttlStr, err)
+	}
+
+	// Hash key = model + concatenated cacheable segment bytes.
+	h := sha256.New()
+	h.Write([]byte(model))
+	h.Write([]byte{0})
+	for _, seg := range segments {
+		if seg.CacheMark {
+			h.Write([]byte(seg.Text))
+		}
+	}
+	key := hex.EncodeToString(h.Sum(nil))
+
+	storePath, err := cachestore.DefaultPath()
+	if err != nil {
+		return "", fmt.Errorf("cache store path: %w", err)
+	}
+	store, openErr := cachestore.Open(storePath)
+	if store == nil {
+		return "", fmt.Errorf("open cache store: %w", openErr)
+	}
+	if openErr != nil {
+		// Corrupt file — Open recovered by returning an empty store.
+		verbose("Cache store was corrupted, starting fresh: %v", openErr)
+	}
+
+	if entry, ok := store.Get(key); ok {
+		verbose("Reusing Gemini cache: %s (expires %s)", entry.Name, entry.ExpiresAt.Format(time.RFC3339))
+		return entry.Name, nil
+	}
+
+	verbose("Creating Gemini context cache (ttl=%s)...", ttl)
+	handle, err := cp.CreateCache(ctx, segments, model, ttl)
+	if err != nil {
+		return "", fmt.Errorf("create cache: %w", err)
+	}
+
+	store.Put(key, cachestore.Entry{Name: handle.Name, Model: model, ExpiresAt: handle.ExpiresAt})
+	if err := store.Save(); err != nil {
+		verbose("Cache store save failed (cache created but not persisted): %v", err)
+	}
+	verbose("Created Gemini cache: %s (expires %s)", handle.Name, handle.ExpiresAt.Format(time.RFC3339))
+	return handle.Name, nil
 }
 
 func filterBySeverity(issues []review.Issue, threshold string) []review.Issue {
