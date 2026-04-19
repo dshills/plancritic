@@ -22,3 +22,6 @@ plancritic-debug-prompt.txt
 
 # Environment
 .env
+
+.claude
+.atlas
