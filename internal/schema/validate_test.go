@@ -12,7 +12,7 @@ func validReview() *review.Review {
 		{
 			ID: "ISSUE-0001", Severity: review.SeverityCritical,
 			Category: review.CategoryContradiction,
-			Title: "Test issue", Description: "A test issue",
+			Title:    "Test issue", Description: "A test issue",
 			Evidence: []review.Evidence{
 				{Source: "plan", Path: "plan.md", LineStart: 1, LineEnd: 2, Quote: "some text"},
 			},
@@ -37,7 +37,7 @@ func validReview() *review.Review {
 }
 
 func TestValidateValid(t *testing.T) {
-	errs := Validate(validReview(), 100)
+	errs := Validate(validReview(), 100, nil)
 	if len(errs) > 0 {
 		for _, e := range errs {
 			t.Errorf("unexpected error: %s", e)
@@ -48,7 +48,7 @@ func TestValidateValid(t *testing.T) {
 func TestValidateInvalidVerdict(t *testing.T) {
 	r := validReview()
 	r.Summary.Verdict = "INVALID"
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	found := false
 	for _, e := range errs {
 		if e.Path == "summary.verdict" {
@@ -63,7 +63,7 @@ func TestValidateInvalidVerdict(t *testing.T) {
 func TestValidateDuplicateIssueIDs(t *testing.T) {
 	r := validReview()
 	r.Issues = append(r.Issues, r.Issues[0])
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	found := false
 	for _, e := range errs {
 		if e.Message == `duplicate ID: "ISSUE-0001"` {
@@ -79,7 +79,7 @@ func TestValidateInvalidEvidence(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Evidence[0].Source = "unknown"
 	r.Issues[0].Evidence[0].LineStart = 0
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	if len(errs) < 2 {
 		t.Errorf("expected at least 2 evidence errors, got %d", len(errs))
 	}
@@ -88,7 +88,7 @@ func TestValidateInvalidEvidence(t *testing.T) {
 func TestValidateLineExceedsPlan(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Evidence[0].LineEnd = 200
-	errs := Validate(r, 50)
+	errs := Validate(r, 50, nil)
 	found := false
 	for _, e := range errs {
 		if e.Path == "issues[0].evidence[0].line_end" {
@@ -105,7 +105,7 @@ func TestValidatePatches(t *testing.T) {
 	r.Patches = []review.Patch{
 		{ID: "", Type: "INVALID", Title: "", DiffUnified: ""},
 	}
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	if len(errs) < 3 {
 		t.Errorf("expected at least 3 patch errors, got %d", len(errs))
 	}
@@ -116,42 +116,42 @@ func TestValidatePatches(t *testing.T) {
 func TestValidateIssueEmptyID(t *testing.T) {
 	r := validReview()
 	r.Issues[0].ID = ""
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].id", "required")
 }
 
 func TestValidateIssueInvalidSeverity(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Severity = "BOGUS"
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].severity", "invalid")
 }
 
 func TestValidateIssueInvalidCategory(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Category = "NOT_A_CATEGORY"
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].category", "invalid")
 }
 
 func TestValidateIssueEmptyTitle(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Title = ""
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].title", "required")
 }
 
 func TestValidateIssueEmptyDescription(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Description = ""
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].description", "required")
 }
 
 func TestValidateIssueEmptyEvidence(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Evidence = []review.Evidence{}
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].evidence", "at least one")
 }
 
@@ -160,42 +160,42 @@ func TestValidateIssueEmptyEvidence(t *testing.T) {
 func TestValidateQuestionEmptyID(t *testing.T) {
 	r := validReview()
 	r.Questions[0].ID = ""
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "questions[0].id", "required")
 }
 
 func TestValidateDuplicateQuestionIDs(t *testing.T) {
 	r := validReview()
 	r.Questions = append(r.Questions, r.Questions[0])
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "questions[1].id", "duplicate")
 }
 
 func TestValidateQuestionInvalidSeverity(t *testing.T) {
 	r := validReview()
 	r.Questions[0].Severity = "NOPE"
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "questions[0].severity", "invalid")
 }
 
 func TestValidateQuestionEmptyQuestion(t *testing.T) {
 	r := validReview()
 	r.Questions[0].Question = ""
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "questions[0].question", "required")
 }
 
 func TestValidateQuestionEmptyWhyNeeded(t *testing.T) {
 	r := validReview()
 	r.Questions[0].WhyNeeded = ""
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "questions[0].why_needed", "required")
 }
 
 func TestValidateQuestionEmptyEvidence(t *testing.T) {
 	r := validReview()
 	r.Questions[0].Evidence = []review.Evidence{}
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "questions[0].evidence", "at least one")
 }
 
@@ -204,7 +204,7 @@ func TestValidateQuestionEmptyEvidence(t *testing.T) {
 func TestValidateEvidenceEmptyPath(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Evidence[0].Path = ""
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].evidence[0].path", "required")
 }
 
@@ -212,28 +212,81 @@ func TestValidateEvidenceLineEndLessThanLineStart(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Evidence[0].LineStart = 10
 	r.Issues[0].Evidence[0].LineEnd = 5
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].evidence[0].line_end", "line_start")
 }
 
-func TestValidateEvidenceEmptyQuote(t *testing.T) {
+func TestValidateEvidenceEmptyQuoteAllowed(t *testing.T) {
+	// Quote is reconstructed post-validation, so the LLM may omit it.
 	r := validReview()
 	r.Issues[0].Evidence[0].Quote = ""
-	errs := Validate(r, 0)
-	assertHasError(t, errs, "issues[0].evidence[0].quote", "required")
+	errs := Validate(r, 0, nil)
+	for _, e := range errs {
+		if strings.Contains(e.Path, ".quote") {
+			t.Errorf("unexpected quote validation error: %s", e)
+		}
+	}
+}
+
+func TestValidateEvidenceContextCitationWithNoContextsFails(t *testing.T) {
+	// An empty-but-non-nil map means "no context files were provided";
+	// the LLM therefore cannot validly cite any context source.
+	r := validReview()
+	r.Issues[0].Evidence[0].Source = "context"
+	r.Issues[0].Evidence[0].Path = "never-provided.md"
+	errs := Validate(r, 0, map[string]int{})
+	assertHasError(t, errs, "issues[0].evidence[0].path", "was not provided")
+}
+
+func TestValidateEvidenceContextCitationNilSkipsContextCheck(t *testing.T) {
+	// nil signals "skip context-side validation" (used by tests that
+	// don't care about cross-file consistency).
+	r := validReview()
+	r.Issues[0].Evidence[0].Source = "context"
+	r.Issues[0].Evidence[0].Path = "whatever.md"
+	errs := Validate(r, 0, nil)
+	for _, e := range errs {
+		if strings.Contains(e.Path, "issues[0].evidence[0]") {
+			t.Errorf("unexpected evidence error with nil map: %s", e)
+		}
+	}
+}
+
+func TestValidateEvidenceContextOutOfBounds(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Evidence[0].Source = "context"
+	r.Issues[0].Evidence[0].Path = "constraints.md"
+	r.Issues[0].Evidence[0].LineStart = 5
+	r.Issues[0].Evidence[0].LineEnd = 20
+	errs := Validate(r, 0, map[string]int{"constraints.md": 10})
+	assertHasError(t, errs, "issues[0].evidence[0].line_end", "exceeds")
+}
+
+func TestValidateEvidenceContextWithinBounds(t *testing.T) {
+	r := validReview()
+	r.Issues[0].Evidence[0].Source = "context"
+	r.Issues[0].Evidence[0].Path = "constraints.md"
+	r.Issues[0].Evidence[0].LineStart = 1
+	r.Issues[0].Evidence[0].LineEnd = 5
+	errs := Validate(r, 0, map[string]int{"constraints.md": 10})
+	for _, e := range errs {
+		if strings.Contains(e.Path, "issues[0].evidence[0]") {
+			t.Errorf("unexpected evidence error: %s", e)
+		}
+	}
 }
 
 func TestValidateEvidenceInvalidSource(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Evidence[0].Source = "filesystem"
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].evidence[0].source", "plan")
 }
 
 func TestValidateEvidenceLineStartZero(t *testing.T) {
 	r := validReview()
 	r.Issues[0].Evidence[0].LineStart = 0
-	errs := Validate(r, 0)
+	errs := Validate(r, 0, nil)
 	assertHasError(t, errs, "issues[0].evidence[0].line_start", ">= 1")
 }
 

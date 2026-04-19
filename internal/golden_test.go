@@ -52,7 +52,7 @@ func TestGoldenSimpleReview(t *testing.T) {
 	}
 
 	// Validate schema
-	validationErrs := schema.Validate(&rev, len(p.Lines))
+	validationErrs := schema.Validate(&rev, len(p.Lines), nil)
 	for _, e := range validationErrs {
 		t.Errorf("validation error: %s", e)
 	}

@@ -127,6 +127,21 @@ func TestBuildMatchesConcatenatedSegments(t *testing.T) {
 	}
 }
 
+func TestBuildOmitsQuoteFromSchemaAndTellsModelNotToEmitIt(t *testing.T) {
+	p := &plan.Plan{FilePath: "plan.md", Lines: []string{"step"}}
+	text := Build(BuildOpts{Plan: p})
+
+	// Evidence schema line for questions must no longer list "quote": string.
+	// Matching the questions evidence line is a proxy for all evidence shapes
+	// since they share the same structural description.
+	if strings.Contains(text, `"quote": string`) {
+		t.Error("prompt schema should no longer request a quote field from the LLM")
+	}
+	if !strings.Contains(text, "Do NOT emit a \"quote\" field") {
+		t.Error("prompt should explicitly tell the model not to emit quote")
+	}
+}
+
 func TestBuildRepair(t *testing.T) {
 	errs := []schema.ValidationError{
 		{Path: "issues[0].severity", Message: "invalid: \"HIGH\""},

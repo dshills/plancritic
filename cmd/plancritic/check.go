@@ -279,8 +279,27 @@ func runCheck(planPath string, f *checkFlags) error {
 		result = sanitized
 	}
 
-	// 10. Validate
-	validationErrs := schema.Validate(&rev, len(p.Lines))
+	// 10. Validate. Build context lookup maps in a single pass; both
+	// maps are keyed by basename, matching the identifier the prompt
+	// exposes to the LLM (see prompt.BuildSegments).
+	// Use review.NormalizeContextPath so the map keys match exactly
+	// what schema.Validate and review.ReconstructQuotes will compute
+	// from Evidence.Path, regardless of the host OS or whether the
+	// LLM emits back- or forward-slash paths.
+	contextLineCounts := make(map[string]int, len(contexts))
+	contextLinesByBase := make(map[string][]string, len(contexts))
+	for _, c := range contexts {
+		base := review.NormalizeContextPath(c.FilePath)
+		if _, dup := contextLinesByBase[base]; dup {
+			// Unconditional stderr: two context files with the same
+			// basename make the LLM's citations ambiguous and will
+			// silently resolve to whichever file we store last.
+			fmt.Fprintf(os.Stderr, "plancritic: warning: multiple context files share basename %q — citations may be ambiguous\n", base)
+		}
+		contextLineCounts[base] = len(c.Lines)
+		contextLinesByBase[base] = c.Lines
+	}
+	validationErrs := schema.Validate(&rev, len(p.Lines), contextLineCounts)
 	if len(validationErrs) > 0 {
 		verbose("Validation failed (%d errors), attempting repair...", len(validationErrs))
 
@@ -302,7 +321,7 @@ func runCheck(planPath string, f *checkFlags) error {
 			}
 		}
 
-		validationErrs2 := schema.Validate(&rev2, len(p.Lines))
+		validationErrs2 := schema.Validate(&rev2, len(p.Lines), contextLineCounts)
 		if len(validationErrs2) > 0 {
 			fmt.Fprintln(os.Stderr, "Schema validation errors after repair:")
 			for _, e := range validationErrs2 {
@@ -314,6 +333,17 @@ func runCheck(planPath string, f *checkFlags) error {
 		rev = rev2
 	}
 	verbose("Validation passed")
+
+	// 10b. Reconstruct evidence quotes from cited line ranges. The LLM
+	// is instructed to omit the quote field to save output tokens; any
+	// quote it still emits is overwritten from the authoritative source.
+	quoteSrc := review.QuoteSource{
+		PlanLines:          p.Lines,
+		ContextsByBasename: contextLinesByBase,
+	}
+	if misses := review.ReconstructQuotes(&rev, quoteSrc); misses > 0 {
+		verbose("Quote reconstruction: %d evidence entries could not be resolved to a source", misses)
+	}
 
 	// 11. Post-process
 	review.SortIssues(rev.Issues)

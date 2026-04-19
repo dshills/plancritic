@@ -78,7 +78,7 @@ func runReview(t *testing.T, provider llm.Provider, opts prompt.BuildOpts, planL
 
 	// Schema validation after recompute (non-fatal: LLMs may produce minor schema issues
 	// that would be caught by the repair loop in production)
-	validationErrs := schema.Validate(&rev, planLineCount)
+	validationErrs := schema.Validate(&rev, planLineCount, nil)
 	for _, e := range validationErrs {
 		t.Logf("validation warning: %s", e)
 	}
@@ -394,7 +394,7 @@ func TestIntegrationPostProcessing(t *testing.T) {
 	rev.Summary = summary
 
 	// Re-validate after full pipeline (non-fatal for LLM-invented categories)
-	validationErrs := schema.Validate(&rev, len(p.Lines))
+	validationErrs := schema.Validate(&rev, len(p.Lines), nil)
 	for _, e := range validationErrs {
 		t.Logf("post-pipeline validation warning: %s", e)
 	}

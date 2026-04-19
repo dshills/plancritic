@@ -18,8 +18,13 @@ func (v ValidationError) Error() string {
 }
 
 // Validate checks a Review for structural validity.
-// planLineCount is the total number of lines in the plan file (0 to skip line range checks).
-func Validate(r *review.Review, planLineCount int) []ValidationError {
+// planLineCount is the total number of lines in the plan file (0 to
+// skip plan line-range checks). contextLineCounts maps a context
+// file's basename (the identifier used in the prompt, matching
+// Evidence.Path) to its total line count; pass nil to skip context
+// line-range checks. Range checks are only enforced when a positive
+// count is supplied for the cited source.
+func Validate(r *review.Review, planLineCount int, contextLineCounts map[string]int) []ValidationError {
 	var errs []ValidationError
 
 	// Note: tool, version, score, and severity counts are NOT validated here
@@ -58,7 +63,7 @@ func Validate(r *review.Review, planLineCount int) []ValidationError {
 			errs = append(errs, ValidationError{prefix + ".evidence", "at least one evidence entry required"})
 		}
 		for j, ev := range iss.Evidence {
-			errs = append(errs, validateEvidence(fmt.Sprintf("%s.evidence[%d]", prefix, j), ev, planLineCount)...)
+			errs = append(errs, validateEvidence(fmt.Sprintf("%s.evidence[%d]", prefix, j), ev, planLineCount, contextLineCounts)...)
 		}
 	}
 
@@ -86,7 +91,7 @@ func Validate(r *review.Review, planLineCount int) []ValidationError {
 			errs = append(errs, ValidationError{prefix + ".evidence", "at least one evidence entry required"})
 		}
 		for j, ev := range q.Evidence {
-			errs = append(errs, validateEvidence(fmt.Sprintf("%s.evidence[%d]", prefix, j), ev, planLineCount)...)
+			errs = append(errs, validateEvidence(fmt.Sprintf("%s.evidence[%d]", prefix, j), ev, planLineCount, contextLineCounts)...)
 		}
 	}
 
@@ -110,7 +115,7 @@ func Validate(r *review.Review, planLineCount int) []ValidationError {
 	return errs
 }
 
-func validateEvidence(prefix string, ev review.Evidence, planLineCount int) []ValidationError {
+func validateEvidence(prefix string, ev review.Evidence, planLineCount int, contextLineCounts map[string]int) []ValidationError {
 	var errs []ValidationError
 	if ev.Source != "plan" && ev.Source != "context" {
 		errs = append(errs, ValidationError{prefix + ".source", fmt.Sprintf("must be 'plan' or 'context', got %q", ev.Source)})
@@ -127,8 +132,20 @@ func validateEvidence(prefix string, ev review.Evidence, planLineCount int) []Va
 	if planLineCount > 0 && ev.Source == "plan" && ev.LineEnd > planLineCount {
 		errs = append(errs, ValidationError{prefix + ".line_end", fmt.Sprintf("exceeds plan line count (%d)", planLineCount)})
 	}
-	if ev.Quote == "" {
-		errs = append(errs, ValidationError{prefix + ".quote", "required"})
+	// Callers pass nil to skip context-side validation (used by tests
+	// that don't care about cross-file consistency). An empty but
+	// non-nil map means "no context files were provided" and any
+	// "context" citation from the LLM is therefore invalid.
+	if ev.Source == "context" && contextLineCounts != nil && ev.Path != "" {
+		key := review.NormalizeContextPath(ev.Path)
+		count, ok := contextLineCounts[key]
+		if !ok {
+			errs = append(errs, ValidationError{prefix + ".path", fmt.Sprintf("context %q was not provided", key)})
+		} else if ev.LineEnd > count {
+			errs = append(errs, ValidationError{prefix + ".line_end", fmt.Sprintf("exceeds context %q line count (%d)", key, count)})
+		}
 	}
+	// Quote is no longer required from the LLM: the runner reconstructs
+	// it deterministically from the line range (see review.ReconstructQuotes).
 	return errs
 }

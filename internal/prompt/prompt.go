@@ -50,12 +50,13 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 	prefix.WriteString("\n\n")
 	prefix.WriteString(`## Rules
 
-1. Cite evidence for every issue and question using exact line numbers and quotes from the plan or context.
-2. Do NOT invent facts about the repository, codebase, or environment that are not present in the plan or context files.
-3. Keep the number of questions minimal — only ask what is needed to unblock execution.
-4. Order issues by severity (CRITICAL first, then WARN, then INFO), then by line number of first evidence.
-5. The verdict must be one of: EXECUTABLE_AS_IS, EXECUTABLE_WITH_CLARIFICATIONS, NOT_EXECUTABLE.
-6. Compute the score starting at 100, subtracting 20 per CRITICAL, 7 per WARN, 2 per INFO, clamped at 0.
+1. Cite evidence for every issue and question using exact line numbers from the plan or context (source, path, line_start, line_end).
+2. Do NOT emit a "quote" field in evidence. The runner reconstructs the quote deterministically from the cited line range; any "quote" you emit will be overwritten. This rule saves tokens — comply strictly.
+3. Do NOT invent facts about the repository, codebase, or environment that are not present in the plan or context files.
+4. Keep the number of questions minimal — only ask what is needed to unblock execution.
+5. Order issues by severity (CRITICAL first, then WARN, then INFO), then by line number of first evidence.
+6. The verdict must be one of: EXECUTABLE_AS_IS, EXECUTABLE_WITH_CLARIFICATIONS, NOT_EXECUTABLE.
+7. Compute the score starting at 100, subtracting 20 per CRITICAL, 7 per WARN, 2 per INFO, clamped at 0.
 
 `)
 	if opts.Strict {
@@ -159,7 +160,7 @@ const schemaDefinition = `## Output JSON Schema
     "question": string,
     "why_needed": string,
     "blocks": [string],
-    "evidence": [{"source": "plan"|"context", "path": string, "line_start": int, "line_end": int, "quote": string}],
+    "evidence": [{"source": "plan"|"context", "path": string, "line_start": int, "line_end": int}],
     "suggested_answers": [string]
   }],
   "issues": [{
