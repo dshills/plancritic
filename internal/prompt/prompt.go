@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	pctx "github.com/dshills/plancritic/internal/context"
+	"github.com/dshills/plancritic/internal/llm"
 	"github.com/dshills/plancritic/internal/plan"
 	"github.com/dshills/plancritic/internal/profile"
 	"github.com/dshills/plancritic/internal/schema"
@@ -23,23 +24,31 @@ type BuildOpts struct {
 	MaxQuestions int
 }
 
-// Build assembles the full LLM prompt.
-func Build(opts BuildOpts) string {
-	var b strings.Builder
+// BuildSegments assembles the prompt as ordered segments with cache
+// checkpoints after the static prefix and after the context files. The
+// plan (which changes across re-runs while the user iterates) is placed
+// last so the prefix can be served from cache.
+//
+// Segment layout:
+//
+//	[0] preamble + schema + rules + strict + profile   (CacheMark)
+//	[1] context files                                  (CacheMark)
+//	[2] plan + inferred step IDs + caps                (variable)
+func BuildSegments(opts BuildOpts) []llm.Segment {
+	segs := make([]llm.Segment, 0, 3)
 
-	// 1. System preamble
-	b.WriteString(`You are a plan critic. Your task is to review a software implementation plan and produce a structured critique.
+	// Segment 1: preamble + schema + rules + strict + profile.
+	// These depend only on --profile and --strict and rarely change
+	// across re-runs of the same invocation, so we cache them.
+	var prefix strings.Builder
+	prefix.WriteString(`You are a plan critic. Your task is to review a software implementation plan and produce a structured critique.
 
 You MUST output ONLY valid JSON matching the schema below. No markdown, no prose outside JSON.
 
 `)
-
-	// 2. Schema definition
-	b.WriteString(schemaDefinition)
-	b.WriteString("\n\n")
-
-	// 3. Grounding rules
-	b.WriteString(`## Rules
+	prefix.WriteString(schemaDefinition)
+	prefix.WriteString("\n\n")
+	prefix.WriteString(`## Rules
 
 1. Cite evidence for every issue and question using exact line numbers and quotes from the plan or context.
 2. Do NOT invent facts about the repository, codebase, or environment that are not present in the plan or context files.
@@ -49,10 +58,8 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 6. Compute the score starting at 100, subtracting 20 per CRITICAL, 7 per WARN, 2 per INFO, clamped at 0.
 
 `)
-
-	// 4. Strict mode
 	if opts.Strict {
-		b.WriteString(`## Strict Grounding Mode (ENABLED)
+		prefix.WriteString(`## Strict Grounding Mode (ENABLED)
 
 - Treat everything NOT present in the plan or context files as UNKNOWN.
 - Do NOT claim "the repo uses X" unless X appears in the provided context.
@@ -61,31 +68,35 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 
 `)
 	}
-
-	// 5. Profile
 	if opts.Profile != nil {
-		b.WriteString(profile.FormatForPrompt(opts.Profile))
-		b.WriteString("\n")
+		prefix.WriteString(profile.FormatForPrompt(opts.Profile))
+		prefix.WriteString("\n")
 	}
+	segs = append(segs, llm.Segment{Text: prefix.String(), CacheMark: true})
 
-	// 6. Plan (use basename to avoid leaking filesystem paths to LLM)
-	fmt.Fprintf(&b, "<plan path=%q>\n%s</plan>\n\n", filepath.Base(opts.Plan.FilePath), plan.LineNumbered(opts.Plan))
-
-	// 7. Context files
-	for _, ctx := range opts.Contexts {
-		fmt.Fprintf(&b, "<context path=%q>\n%s</context>\n\n", filepath.Base(ctx.FilePath), pctx.LineNumbered(ctx))
-	}
-
-	// 8. Step IDs
-	if len(opts.StepIDs) > 0 {
-		b.WriteString("## Inferred Plan Steps\n\n")
-		for _, s := range opts.StepIDs {
-			fmt.Fprintf(&b, "- %s (L%d): %s\n", s.ID, s.LineStart, s.Text)
+	// Segment 2: context files. These are stable across re-runs where
+	// the user edits only the plan. Marked for caching.
+	if len(opts.Contexts) > 0 {
+		var ctxBuf strings.Builder
+		for _, ctx := range opts.Contexts {
+			fmt.Fprintf(&ctxBuf, "<context path=%q>\n%s</context>\n\n", filepath.Base(ctx.FilePath), pctx.LineNumbered(ctx))
 		}
-		b.WriteString("\n")
+		segs = append(segs, llm.Segment{Text: ctxBuf.String(), CacheMark: true})
 	}
 
-	// 9. Caps
+	// Segment 3: plan, inferred step IDs, and caps. These vary across
+	// re-runs (the user edits the plan between calls) and are not cached.
+	var tail strings.Builder
+	fmt.Fprintf(&tail, "<plan path=%q>\n%s</plan>\n\n", filepath.Base(opts.Plan.FilePath), plan.LineNumbered(opts.Plan))
+
+	if len(opts.StepIDs) > 0 {
+		tail.WriteString("## Inferred Plan Steps\n\n")
+		for _, s := range opts.StepIDs {
+			fmt.Fprintf(&tail, "- %s (L%d): %s\n", s.ID, s.LineStart, s.Text)
+		}
+		tail.WriteString("\n")
+	}
+
 	maxIssues := opts.MaxIssues
 	if maxIssues <= 0 {
 		maxIssues = 50
@@ -94,9 +105,17 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 	if maxQ <= 0 {
 		maxQ = 20
 	}
-	fmt.Fprintf(&b, "Return at most %d issues and %d questions.\n", maxIssues, maxQ)
+	fmt.Fprintf(&tail, "Return at most %d issues and %d questions.\n", maxIssues, maxQ)
+	segs = append(segs, llm.Segment{Text: tail.String()})
 
-	return b.String()
+	return segs
+}
+
+// Build assembles the full LLM prompt as a single string by concatenating
+// the segments returned by BuildSegments. Use BuildSegments directly when
+// calling a provider that supports prompt caching.
+func Build(opts BuildOpts) string {
+	return llm.ConcatSegments(BuildSegments(opts))
 }
 
 // BuildRepair constructs a follow-up prompt to fix schema validation errors.

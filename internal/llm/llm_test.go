@@ -216,7 +216,7 @@ func TestResolveProviderFlagUnknown(t *testing.T) {
 
 func TestMockProvider(t *testing.T) {
 	m := &MockProvider{Response: `{"test": true}`}
-	got, err := m.Generate(context.Background(), "prompt", Settings{})
+	got, _, err := m.Generate(context.Background(), "prompt", Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,13 +248,96 @@ func TestAnthropicProviderGenerate(t *testing.T) {
 	defer srv.Close()
 
 	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	got, err := p.Generate(context.Background(), "test prompt", Settings{Temperature: 0.2})
+	got, _, err := p.Generate(context.Background(), "test prompt", Settings{Temperature: 0.2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != `{"result": "ok"}` {
 		t.Errorf("unexpected response: %s", got)
 	}
+}
+
+func TestAnthropicGenerateSegmentsCacheControl(t *testing.T) {
+	var captured anthropicRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := map[string]any{
+			"content":     []map[string]string{{"type": "text", "text": `{"ok": true}`}},
+			"stop_reason": "end_turn",
+			"usage": map[string]int{
+				"input_tokens":                100,
+				"output_tokens":               50,
+				"cache_creation_input_tokens": 800,
+				"cache_read_input_tokens":     0,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	segs := []Segment{
+		{Text: "static prefix\n", CacheMark: true},
+		{Text: "context files\n", CacheMark: true},
+		{Text: "plan content\n"},
+	}
+	_, usage, err := p.GenerateSegments(context.Background(), segs, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(captured.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(captured.Messages))
+	}
+	blocks := captured.Messages[0].Content
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 content blocks, got %d", len(blocks))
+	}
+	if blocks[0].CacheControl == nil || blocks[0].CacheControl.Type != "ephemeral" {
+		t.Error("block 0 should have ephemeral cache_control")
+	}
+	if blocks[1].CacheControl == nil || blocks[1].CacheControl.Type != "ephemeral" {
+		t.Error("block 1 should have ephemeral cache_control")
+	}
+	if blocks[2].CacheControl != nil {
+		t.Error("block 2 (plan) must NOT have cache_control")
+	}
+
+	if usage.CacheCreationInputTokens != 800 {
+		t.Errorf("expected cache_creation=800, got %d", usage.CacheCreationInputTokens)
+	}
+	if usage.InputTokens != 100 || usage.OutputTokens != 50 {
+		t.Errorf("unexpected token counts: %+v", usage)
+	}
+}
+
+func TestAnthropicGenerateSegmentsOmitsEmpty(t *testing.T) {
+	var captured anthropicRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := anthropicResponse{Content: []anthropicContentBlock{{Type: "text", Text: "ok"}}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
+	_, _, err := p.GenerateSegments(context.Background(), []Segment{
+		{Text: "prefix", CacheMark: true},
+		{Text: "", CacheMark: true},
+		{Text: "tail"},
+	}, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Messages[0].Content) != 2 {
+		t.Errorf("empty segment should be dropped; got %d blocks", len(captured.Messages[0].Content))
+	}
+}
+
+func TestAnthropicImplementsSegmentedProvider(t *testing.T) {
+	var _ SegmentedProvider = (*AnthropicProvider)(nil)
 }
 
 func TestOpenAIProviderGenerate(t *testing.T) {
@@ -280,7 +363,7 @@ func TestOpenAIProviderGenerate(t *testing.T) {
 	defer srv.Close()
 
 	p := &OpenAIProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	got, err := p.Generate(context.Background(), "test prompt", Settings{Temperature: 0.2})
+	got, _, err := p.Generate(context.Background(), "test prompt", Settings{Temperature: 0.2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +400,7 @@ func TestGeminiProviderGenerate(t *testing.T) {
 	defer srv.Close()
 
 	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	got, err := p.Generate(context.Background(), "test prompt", Settings{Temperature: 0.2})
+	got, _, err := p.Generate(context.Background(), "test prompt", Settings{Temperature: 0.2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +417,7 @@ func TestGeminiNon200Status(t *testing.T) {
 	defer srv.Close()
 
 	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
@@ -351,7 +434,7 @@ func TestGeminiMalformedJSON(t *testing.T) {
 	defer srv.Close()
 
 	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -369,7 +452,7 @@ func TestGeminiNoCandidates(t *testing.T) {
 	defer srv.Close()
 
 	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for no candidates")
 	}
@@ -396,7 +479,7 @@ func TestGeminiTruncation(t *testing.T) {
 	defer srv.Close()
 
 	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{MaxTokens: 100})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{MaxTokens: 100})
 	if err == nil {
 		t.Fatal("expected error for truncated response")
 	}
@@ -428,7 +511,7 @@ func TestGeminiSeedPassthrough(t *testing.T) {
 	defer srv.Close()
 
 	p := &GeminiProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{Seed: &seed})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{Seed: &seed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +635,7 @@ func TestAnthropicNon200Status(t *testing.T) {
 	defer srv.Close()
 
 	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
@@ -569,7 +652,7 @@ func TestAnthropicMalformedJSON(t *testing.T) {
 	defer srv.Close()
 
 	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -592,7 +675,7 @@ func TestAnthropicTruncation(t *testing.T) {
 	defer srv.Close()
 
 	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{MaxTokens: 100})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{MaxTokens: 100})
 	if err == nil {
 		t.Fatal("expected error for truncated response")
 	}
@@ -614,7 +697,7 @@ func TestAnthropicNoTextContent(t *testing.T) {
 	defer srv.Close()
 
 	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for no text content")
 	}
@@ -634,7 +717,7 @@ func TestAnthropicEmptyContentBlocks(t *testing.T) {
 	defer srv.Close()
 
 	p := &AnthropicProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for empty content blocks")
 	}
@@ -653,7 +736,7 @@ func TestOpenAINon200Status(t *testing.T) {
 	defer srv.Close()
 
 	p := &OpenAIProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
@@ -670,7 +753,7 @@ func TestOpenAIMalformedJSON(t *testing.T) {
 	defer srv.Close()
 
 	p := &OpenAIProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -688,7 +771,7 @@ func TestOpenAIEmptyChoices(t *testing.T) {
 	defer srv.Close()
 
 	p := &OpenAIProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err == nil {
 		t.Fatal("expected error for empty choices")
 	}
@@ -713,7 +796,7 @@ func TestOpenAITruncation(t *testing.T) {
 	defer srv.Close()
 
 	p := &OpenAIProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{MaxTokens: 100})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{MaxTokens: 100})
 	if err == nil {
 		t.Fatal("expected error for truncated response")
 	}
@@ -745,7 +828,7 @@ func TestOpenAISeedPassthrough(t *testing.T) {
 	defer srv.Close()
 
 	p := &OpenAIProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{Seed: &seed})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{Seed: &seed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +854,7 @@ func TestOpenAISeedOmittedWhenNil(t *testing.T) {
 	defer srv.Close()
 
 	p := &OpenAIProvider{apiKey: "test-key", apiURL: srv.URL, client: srv.Client()}
-	_, err := p.Generate(context.Background(), "prompt", Settings{})
+	_, _, err := p.Generate(context.Background(), "prompt", Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}

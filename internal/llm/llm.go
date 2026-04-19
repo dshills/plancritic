@@ -14,10 +14,56 @@ type Settings struct {
 	Seed        *int
 }
 
-// Provider generates text from a prompt using an LLM.
+// Usage reports token counts for a single request. Cache-related fields
+// will be zero for providers that do not support prompt caching.
+type Usage struct {
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+}
+
+// Provider generates text from a prompt using an LLM. Usage reports
+// token counts for the returned response and is tied to that specific
+// call (no shared state on the provider).
 type Provider interface {
-	Generate(ctx context.Context, prompt string, settings Settings) (string, error)
+	Generate(ctx context.Context, prompt string, settings Settings) (string, Usage, error)
 	Name() string
+}
+
+// Segment is a piece of prompt text that may optionally mark a cache
+// breakpoint for providers that support prompt caching (e.g. Anthropic).
+// Providers that don't support caching concatenate all segments into a
+// single prompt string.
+type Segment struct {
+	Text string
+	// CacheMark, when true, requests that the provider place a cache
+	// checkpoint at the end of this segment. The provider is free to
+	// ignore the mark if the cumulative prefix is too small to cache.
+	CacheMark bool
+}
+
+// SegmentedProvider is an optional extension interface implemented by
+// providers that can take advantage of segmented prompts for caching.
+// Callers should type-assert and fall back to Generate when a provider
+// does not implement this interface.
+type SegmentedProvider interface {
+	Provider
+	GenerateSegments(ctx context.Context, segments []Segment, settings Settings) (string, Usage, error)
+}
+
+// ConcatSegments joins segments into a single prompt string.
+func ConcatSegments(segs []Segment) string {
+	total := 0
+	for _, s := range segs {
+		total += len(s.Text)
+	}
+	var b strings.Builder
+	b.Grow(total)
+	for _, s := range segs {
+		b.WriteString(s.Text)
+	}
+	return b.String()
 }
 
 // ExtractJSON strips markdown code fences from LLM responses that wrap JSON.

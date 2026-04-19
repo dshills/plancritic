@@ -171,7 +171,7 @@ func runCheck(planPath string, f *checkFlags) error {
 	if maxQuestions <= 0 {
 		maxQuestions = review.DefaultMaxQuestions
 	}
-	promptText := prompt.Build(prompt.BuildOpts{
+	promptOpts := prompt.BuildOpts{
 		Plan:         p,
 		Contexts:     contexts,
 		Profile:      prof,
@@ -179,7 +179,9 @@ func runCheck(planPath string, f *checkFlags) error {
 		StepIDs:      stepIDs,
 		MaxIssues:    maxIssues,
 		MaxQuestions: maxQuestions,
-	})
+	}
+	promptSegments := prompt.BuildSegments(promptOpts)
+	promptText := llm.ConcatSegments(promptSegments)
 
 	// 7b. Prompt size check
 	estimatedTokens := len(promptText) / estimatedCharsPerToken
@@ -214,11 +216,23 @@ func runCheck(planPath string, f *checkFlags) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	result, err := provider.Generate(ctx, promptText, settings)
+	var result string
+	var usage llm.Usage
+	if sp, ok := provider.(llm.SegmentedProvider); ok {
+		result, usage, err = sp.GenerateSegments(ctx, promptSegments, settings)
+	} else {
+		result, usage, err = provider.Generate(ctx, promptText, settings)
+	}
 	if err != nil {
 		return exitError(4, "LLM call failed: %v", err)
 	}
 	verbose("Received LLM response (%d bytes)", len(result))
+	if usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 {
+		verbose("Token usage: input=%d (cache read=%d, cache write=%d), output=%d",
+			usage.InputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens, usage.OutputTokens)
+	} else if usage.InputTokens > 0 {
+		verbose("Token usage: input=%d, output=%d", usage.InputTokens, usage.OutputTokens)
+	}
 
 	if f.debug {
 		debugRespPath := "plancritic-debug-response.txt"
@@ -247,9 +261,12 @@ func runCheck(planPath string, f *checkFlags) error {
 		verbose("Validation failed (%d errors), attempting repair...", len(validationErrs))
 
 		repairPrompt := prompt.BuildRepair(result, validationErrs)
-		repairResult, err := provider.Generate(context.Background(), repairPrompt, settings)
+		repairResult, repairUsage, err := provider.Generate(ctx, repairPrompt, settings)
 		if err != nil {
 			return exitError(4, "repair LLM call failed: %v", err)
+		}
+		if repairUsage.InputTokens > 0 {
+			verbose("Repair token usage: input=%d, output=%d", repairUsage.InputTokens, repairUsage.OutputTokens)
 		}
 		repairResult = llm.ExtractJSON(repairResult)
 

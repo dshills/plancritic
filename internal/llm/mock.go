@@ -10,6 +10,6 @@ type MockProvider struct {
 
 func (m *MockProvider) Name() string { return "mock" }
 
-func (m *MockProvider) Generate(_ context.Context, _ string, _ Settings) (string, error) {
-	return m.Response, m.Err
+func (m *MockProvider) Generate(_ context.Context, _ string, _ Settings) (string, Usage, error) {
+	return m.Response, Usage{}, m.Err
 }

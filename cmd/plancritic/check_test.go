@@ -654,11 +654,11 @@ type callCountMockProvider struct {
 
 func (m *callCountMockProvider) Name() string { return "mock" }
 
-func (m *callCountMockProvider) Generate(_ context.Context, _ string, _ llm.Settings) (string, error) {
+func (m *callCountMockProvider) Generate(_ context.Context, _ string, _ llm.Settings) (string, llm.Usage, error) {
 	if m.callIdx >= len(m.responses) {
-		return "", errors.New("no more mock responses")
+		return "", llm.Usage{}, errors.New("no more mock responses")
 	}
 	resp := m.responses[m.callIdx]
 	m.callIdx++
-	return resp, nil
+	return resp, llm.Usage{}, nil
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -35,7 +36,13 @@ func NewAnthropic() (*AnthropicProvider, error) {
 
 func (a *AnthropicProvider) Name() string { return "anthropic" }
 
-func (a *AnthropicProvider) Generate(ctx context.Context, prompt string, s Settings) (string, error) {
+func (a *AnthropicProvider) Generate(ctx context.Context, prompt string, s Settings) (string, Usage, error) {
+	return a.GenerateSegments(ctx, []Segment{{Text: prompt}}, s)
+}
+
+// GenerateSegments sends a prompt composed of ordered segments, placing a
+// cache_control breakpoint on any segment whose CacheMark is true.
+func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Segment, s Settings) (string, Usage, error) {
 	model := s.Model
 	if model == "" {
 		model = anthropicDefaultModel
@@ -46,59 +53,85 @@ func (a *AnthropicProvider) Generate(ctx context.Context, prompt string, s Setti
 		maxTokens = 16384
 	}
 
+	blocks := make([]anthropicContentBlock, 0, len(segments))
+	for _, seg := range segments {
+		if seg.Text == "" {
+			continue
+		}
+		block := anthropicContentBlock{Type: "text", Text: seg.Text}
+		if seg.CacheMark {
+			block.CacheControl = &anthropicCacheControl{Type: "ephemeral"}
+		}
+		blocks = append(blocks, block)
+	}
+	if len(blocks) == 0 {
+		return "", Usage{}, fmt.Errorf("anthropic: empty prompt")
+	}
+
 	reqBody := anthropicRequest{
 		Model:       model,
 		MaxTokens:   maxTokens,
 		Temperature: &s.Temperature,
 		Messages: []anthropicMessage{
-			{Role: "user", Content: prompt},
+			{Role: "user", Content: blocks},
 		},
 	}
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("anthropic: marshal request: %w", err)
+		return "", Usage{}, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.apiURL, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("anthropic: create request: %w", err)
+		return "", Usage{}, fmt.Errorf("anthropic: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", a.apiKey)
 	req.Header.Set("Anthropic-Version", anthropicAPIVersion)
+	req.Header.Set("Anthropic-Beta", "prompt-caching-2024-07-31")
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("anthropic: request failed: %w", err)
+		return "", Usage{}, fmt.Errorf("anthropic: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("anthropic: read response: %w", err)
+		return "", Usage{}, fmt.Errorf("anthropic: read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("anthropic: API returned %d: %s", resp.StatusCode, string(respBody))
+		return "", Usage{}, fmt.Errorf("anthropic: API returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result anthropicResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("anthropic: parse response: %w", err)
+		return "", Usage{}, fmt.Errorf("anthropic: parse response: %w", err)
 	}
 
-	if result.StopReason == "max_tokens" {
-		return "", fmt.Errorf("anthropic: response truncated (hit max_tokens=%d)", maxTokens)
+	usage := Usage{
+		InputTokens:              result.Usage.InputTokens,
+		OutputTokens:             result.Usage.OutputTokens,
+		CacheCreationInputTokens: result.Usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     result.Usage.CacheReadInputTokens,
 	}
 
+	var out strings.Builder
 	for _, block := range result.Content {
 		if block.Type == "text" {
-			return block.Text, nil
+			out.WriteString(block.Text)
 		}
 	}
 
-	return "", fmt.Errorf("anthropic: no text content in response")
+	if result.StopReason == "max_tokens" {
+		return out.String(), usage, fmt.Errorf("anthropic: response truncated (hit max_tokens=%d)", maxTokens)
+	}
+	if out.Len() == 0 {
+		return "", usage, fmt.Errorf("anthropic: no text content in response")
+	}
+	return out.String(), usage, nil
 }
 
 type anthropicRequest struct {
@@ -109,16 +142,29 @@ type anthropicRequest struct {
 }
 
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string                  `json:"role"`
+	Content []anthropicContentBlock `json:"content"`
+}
+
+type anthropicContentBlock struct {
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text,omitempty"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+type anthropicCacheControl struct {
+	Type string `json:"type"`
 }
 
 type anthropicResponse struct {
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
+	Usage      anthropicUsage          `json:"usage"`
 }
 
-type anthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }

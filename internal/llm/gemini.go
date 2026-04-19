@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -34,7 +35,7 @@ func NewGemini() (*GeminiProvider, error) {
 
 func (g *GeminiProvider) Name() string { return "gemini" }
 
-func (g *GeminiProvider) Generate(ctx context.Context, prompt string, s Settings) (string, error) {
+func (g *GeminiProvider) Generate(ctx context.Context, prompt string, s Settings) (string, Usage, error) {
 	model := s.Model
 	if model == "" {
 		model = geminiDefaultModel
@@ -65,52 +66,57 @@ func (g *GeminiProvider) Generate(ctx context.Context, prompt string, s Settings
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("gemini: marshal request: %w", err)
+		return "", Usage{}, fmt.Errorf("gemini: marshal request: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/%s:generateContent?key=%s", g.apiURL, model, g.apiKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("gemini: create request: %w", err)
+		return "", Usage{}, fmt.Errorf("gemini: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("gemini: request failed: %w", err)
+		return "", Usage{}, fmt.Errorf("gemini: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("gemini: read response: %w", err)
+		return "", Usage{}, fmt.Errorf("gemini: read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gemini: API returned %d: %s", resp.StatusCode, string(respBody))
+		return "", Usage{}, fmt.Errorf("gemini: API returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result geminiResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("gemini: parse response: %w", err)
+		return "", Usage{}, fmt.Errorf("gemini: parse response: %w", err)
+	}
+
+	usage := Usage{
+		InputTokens:  result.UsageMetadata.PromptTokenCount,
+		OutputTokens: result.UsageMetadata.CandidatesTokenCount,
 	}
 
 	if len(result.Candidates) == 0 {
-		return "", fmt.Errorf("gemini: no candidates in response")
+		return "", usage, fmt.Errorf("gemini: no candidates in response")
 	}
 
 	candidate := result.Candidates[0]
-	if candidate.FinishReason == "MAX_TOKENS" {
-		return "", fmt.Errorf("gemini: response truncated (hit maxOutputTokens=%d)", maxTokens)
-	}
-
+	var out strings.Builder
 	for _, part := range candidate.Content.Parts {
-		if part.Text != "" {
-			return part.Text, nil
-		}
+		out.WriteString(part.Text)
 	}
-
-	return "", fmt.Errorf("gemini: no text content in response")
+	if candidate.FinishReason == "MAX_TOKENS" {
+		return out.String(), usage, fmt.Errorf("gemini: response truncated (hit maxOutputTokens=%d)", maxTokens)
+	}
+	if out.Len() == 0 {
+		return "", usage, fmt.Errorf("gemini: no text content in response")
+	}
+	return out.String(), usage, nil
 }
 
 type geminiRequest struct {
@@ -134,7 +140,13 @@ type geminiGenerationConfig struct {
 }
 
 type geminiResponse struct {
-	Candidates []geminiCandidate `json:"candidates"`
+	Candidates    []geminiCandidate   `json:"candidates"`
+	UsageMetadata geminiUsageMetadata `json:"usageMetadata"`
+}
+
+type geminiUsageMetadata struct {
+	PromptTokenCount     int `json:"promptTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"`
 }
 
 type geminiCandidate struct {

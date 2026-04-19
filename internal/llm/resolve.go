@@ -114,9 +114,20 @@ type modelOverride struct {
 	model string
 }
 
-func (m *modelOverride) Generate(ctx context.Context, prompt string, s Settings) (string, error) {
+func (m *modelOverride) Generate(ctx context.Context, prompt string, s Settings) (string, Usage, error) {
 	s.Model = m.model
 	return m.Provider.Generate(ctx, prompt, s)
+}
+
+// GenerateSegments forwards to the wrapped provider when it supports
+// segmented prompts. Otherwise it concatenates segments into a single
+// prompt string and calls Generate.
+func (m *modelOverride) GenerateSegments(ctx context.Context, segments []Segment, s Settings) (string, Usage, error) {
+	s.Model = m.model
+	if sp, ok := m.Provider.(SegmentedProvider); ok {
+		return sp.GenerateSegments(ctx, segments, s)
+	}
+	return m.Provider.Generate(ctx, ConcatSegments(segments), s)
 }
 
 // stripProviderPrefix removes a leading "provider:" prefix from a model name.

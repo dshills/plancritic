@@ -34,7 +34,7 @@ func NewOpenAI() (*OpenAIProvider, error) {
 
 func (o *OpenAIProvider) Name() string { return "openai" }
 
-func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings) (string, error) {
+func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings) (string, Usage, error) {
 	model := s.Model
 	if model == "" {
 		model = openaiDefaultModel
@@ -60,46 +60,51 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("openai: marshal request: %w", err)
+		return "", Usage{}, fmt.Errorf("openai: marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiURL, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("openai: create request: %w", err)
+		return "", Usage{}, fmt.Errorf("openai: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
 
 	resp, err := o.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("openai: request failed: %w", err)
+		return "", Usage{}, fmt.Errorf("openai: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("openai: read response: %w", err)
+		return "", Usage{}, fmt.Errorf("openai: read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("openai: API returned %d: %s", resp.StatusCode, string(respBody))
+		return "", Usage{}, fmt.Errorf("openai: API returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result openaiResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("openai: parse response: %w", err)
+		return "", Usage{}, fmt.Errorf("openai: parse response: %w", err)
+	}
+
+	usage := Usage{
+		InputTokens:  result.Usage.PromptTokens,
+		OutputTokens: result.Usage.CompletionTokens,
 	}
 
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("openai: no choices in response")
+		return "", usage, fmt.Errorf("openai: no choices in response")
 	}
 
 	choice := result.Choices[0]
 	if choice.FinishReason == "length" {
-		return "", fmt.Errorf("openai: response truncated (hit max_completion_tokens=%d)", maxTokens)
+		return choice.Message.Content, usage, fmt.Errorf("openai: response truncated (hit max_completion_tokens=%d)", maxTokens)
 	}
 
-	return choice.Message.Content, nil
+	return choice.Message.Content, usage, nil
 }
 
 type openaiRequest struct {
@@ -122,9 +127,15 @@ type openaiResponseFormat struct {
 
 type openaiResponse struct {
 	Choices []openaiChoice `json:"choices"`
+	Usage   openaiUsage    `json:"usage"`
 }
 
 type openaiChoice struct {
 	Message      openaiMessage `json:"message"`
 	FinishReason string        `json:"finish_reason"`
+}
+
+type openaiUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
 }

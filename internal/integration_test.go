@@ -58,7 +58,7 @@ func runReview(t *testing.T, provider llm.Provider, opts prompt.BuildOpts, planL
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	result, err := provider.Generate(ctx, promptText, settings)
+	result, _, err := provider.Generate(ctx, promptText, settings)
 	if err != nil {
 		t.Fatalf("LLM call failed: %v", err)
 	}
