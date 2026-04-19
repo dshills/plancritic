@@ -104,3 +104,26 @@ Only read the file directly if the summary is insufficient.
 ### Never read source files to answer these questions
 If atlas has the answer, do not use Read or Bash(cat).
 Atlas is authoritative — its index is maintained by a PostToolUse hook on Write/Edit/MultiEdit.
+
+## Pre-coding: run aperture
+
+Before starting any non-trivial code change in this repo, run aperture
+to plan context and check feasibility:
+
+    aperture plan TASK.md --format markdown
+
+If a `TASK.md` doesn't exist, pass the task inline:
+
+    aperture plan -p "<one-line task description>" --format markdown
+
+Interpret the output:
+- `feasibility.score < 0.70` or any `severity: blocking` gap → stop and
+  fix the task description or repo state. Do not lower the threshold to
+  get past the gate.
+- `load_mode: full` selections are the files to read first.
+- `reachable` files are discoverable follow-ups, not pre-loaded context.
+
+For an integrated run that plans, persists the manifest, and invokes
+the agent in one step:
+
+    aperture run <agent> TASK.md --fail-on-gaps --min-feasibility 0.70
