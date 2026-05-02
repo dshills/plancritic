@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -24,6 +25,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/dshills/plancritic/internal/llm"
 	"github.com/dshills/plancritic/internal/profile"
 	"github.com/dshills/plancritic/internal/review"
 	"github.com/dshills/plancritic/internal/reviewer"
@@ -113,6 +115,7 @@ func newServeCmd() *cobra.Command {
 func (s *webServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/favicon.svg", s.favicon)
+	mux.HandleFunc("/models", s.models)
 	mux.HandleFunc("/", s.index)
 	mux.HandleFunc("/check", s.check)
 	return mux
@@ -126,6 +129,51 @@ func (s *webServer) favicon(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/svg+xml")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = io.WriteString(w, faviconSVG)
+}
+
+type modelsResponse struct {
+	Provider string          `json:"provider"`
+	Models   []llm.ModelInfo `json:"models"`
+}
+
+func (s *webServer) models(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOriginRequest(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("provider")))
+	if provider == "" {
+		provider = s.base.ProviderName
+	}
+	if provider == "" {
+		provider = "openai"
+	}
+	if !llm.IsSupportedProvider(provider) {
+		http.Error(w, fmt.Sprintf("invalid provider %q", provider), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	models, err := llm.ListModels(ctx, provider)
+	if err != nil {
+		log.Printf("plancritic web list models failed: %v", err)
+		http.Error(w, "Unable to load provider models.", http.StatusBadGateway)
+		return
+	}
+	if models == nil {
+		models = []llm.ModelInfo{}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(modelsResponse{
+		Provider: provider,
+		Models:   models,
+	}); err != nil {
+		log.Printf("plancritic web write models response: %v", err)
+	}
 }
 
 func (s *webServer) index(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +286,7 @@ func (s *webServer) check(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	findings := findingsFromReview(rev, f.SeverityThreshold)
-	addPlanLineBadges(planLines, findings, planName)
+	addPlanLineBadges(planLines, findings, planName, filepath.Base(planPath))
 	data := resultData{
 		Review:     rev,
 		PlanName:   planName,
@@ -682,7 +730,7 @@ func questionDetail(question review.Question) []string {
 	return nonEmptyStrings(values...)
 }
 
-func addPlanLineBadges(lines []numberedLine, findings []findingRow, planName string) {
+func addPlanLineBadges(lines []numberedLine, findings []findingRow, planNames ...string) {
 	if len(lines) == 0 {
 		return
 	}
@@ -694,7 +742,7 @@ func addPlanLineBadges(lines []numberedLine, findings []findingRow, planName str
 			if ev.Source != "plan" {
 				continue
 			}
-			if ev.Path != "" && filepath.Base(ev.Path) != planName {
+			if !matchesPlanEvidencePath(ev.Path, planNames...) {
 				continue
 			}
 			start := ev.LineStart
@@ -730,6 +778,19 @@ func addPlanLineBadges(lines []numberedLine, findings []findingRow, planName str
 	for i := range lines {
 		lines[i].Badges = byLine[lines[i].Number]
 	}
+}
+
+func matchesPlanEvidencePath(path string, planNames ...string) bool {
+	if path == "" {
+		return true
+	}
+	base := filepath.Base(path)
+	for _, name := range planNames {
+		if name != "" && strings.EqualFold(base, filepath.Base(name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func nonEmptyStrings(values ...string) []string {
@@ -944,6 +1005,121 @@ const pageTemplate = `<!doctype html>
         }
       }
 
+      function initializeModelPicker() {
+        var form = document.querySelector("[data-review-form]");
+        var provider = form ? form.querySelector('select[name="provider"]') : null;
+        var model = form ? form.querySelector('input[name="model"]') : null;
+        if (!form || !provider || !model) {
+          return;
+        }
+        loadProviderModels(form);
+      }
+
+      function loadProviderModels(form) {
+        var provider = form.querySelector('select[name="provider"]');
+        var model = form.querySelector('input[name="model"]');
+        var status = form.querySelector("#model_picker_status");
+        if (!provider || !model) {
+          return;
+        }
+        var requestID = String(Date.now()) + ":" + provider.value;
+        form.dataset.modelRequestId = requestID;
+        if (form.modelRequestController) {
+          form.modelRequestController.abort();
+        }
+        var controller = window.AbortController ? new AbortController() : null;
+        form.modelRequestController = controller;
+        if (status) {
+          status.textContent = "Loading available models...";
+        }
+        var options = {
+          method: "GET",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" }
+        };
+        if (controller) {
+          options.signal = controller.signal;
+        }
+        fetch("/models?provider=" + encodeURIComponent(provider.value), options).then(function (response) {
+          if (!response.ok) {
+            return response.text().then(function (text) {
+              throw new Error(text || response.statusText || "Unable to load provider models.");
+            });
+          }
+          return response.json();
+        }).then(function (payload) {
+          if (form.dataset.modelRequestId !== requestID) {
+            return;
+          }
+          var models = Array.isArray(payload.models) ? payload.models : [];
+          form.modelOptions = models;
+          if (status) {
+            status.textContent = models.length ? models.length + " models loaded." : "No models returned; enter a model manually.";
+          }
+        }).catch(function (error) {
+          if (error && error.name === "AbortError") {
+            return;
+          }
+          if (form.dataset.modelRequestId !== requestID) {
+            return;
+          }
+          form.modelOptions = [];
+          if (status) {
+            status.textContent = "Could not load models; enter a model manually.";
+          }
+        });
+      }
+
+      function showModelMenu(form, filter) {
+        var menu = form ? form.querySelector("#model_options") : null;
+        var model = form ? form.querySelector('input[name="model"]') : null;
+        if (!menu || !model) {
+          return;
+        }
+        var models = Array.isArray(form.modelOptions) ? form.modelOptions : [];
+        var needle = (filter || "").trim().toLowerCase();
+        var visible = models.filter(function (item) {
+          if (!item || !item.id) {
+            return false;
+          }
+          if (!needle) {
+            return true;
+          }
+          return item.id.toLowerCase().indexOf(needle) >= 0 ||
+            (item.display_name || "").toLowerCase().indexOf(needle) >= 0;
+        });
+        menu.replaceChildren();
+        visible.forEach(function (item) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "model-option";
+          button.setAttribute("role", "option");
+          button.setAttribute("data-model-option", item.id);
+          var id = document.createElement("span");
+          id.textContent = item.id;
+          button.append(id);
+          if (item.display_name) {
+            var name = document.createElement("small");
+            name.textContent = item.display_name;
+            button.append(name);
+          }
+          menu.append(button);
+        });
+        menu.hidden = visible.length === 0;
+        model.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+      }
+
+      function hideModelMenu(form) {
+        var menu = form ? form.querySelector("#model_options") : null;
+        var model = form ? form.querySelector('input[name="model"]') : null;
+        if (menu) {
+          menu.hidden = true;
+        }
+        if (model) {
+          model.setAttribute("aria-expanded", "false");
+        }
+      }
+
       document.addEventListener("htmx:beforeRequest", function (event) {
         var form = formFromEvent(event);
         if (form) {
@@ -959,6 +1135,17 @@ const pageTemplate = `<!doctype html>
       });
 
       document.addEventListener("click", function (event) {
+        var modelOption = event.target.closest("[data-model-option]");
+        if (modelOption) {
+          var form = modelOption.closest("form");
+          var model = form ? form.querySelector('input[name="model"]') : null;
+          if (model) {
+            model.value = modelOption.getAttribute("data-model-option") || "";
+            model.focus();
+          }
+          hideModelMenu(form);
+          return;
+        }
         var opener = event.target.closest("[data-modal-target]");
         if (opener) {
           var modal = document.getElementById(opener.getAttribute("data-modal-target"));
@@ -983,6 +1170,47 @@ const pageTemplate = `<!doctype html>
             }
           }
         }
+        if (!event.target.closest || !event.target.closest(".model-picker")) {
+          document.querySelectorAll("[data-review-form]").forEach(hideModelMenu);
+        }
+      });
+
+      document.addEventListener("change", function (event) {
+        var provider = event.target;
+        if (!provider || !provider.matches || !provider.matches('select[name="provider"]')) {
+          return;
+        }
+        var form = provider.form;
+        var model = form ? form.querySelector('input[name="model"]') : null;
+        if (!model) {
+          return;
+        }
+        model.value = "";
+        loadProviderModels(form);
+        showModelMenu(form, "");
+      });
+
+      document.addEventListener("focusin", function (event) {
+        var model = event.target;
+        if (!model || !model.matches || !model.matches('input[name="model"]')) {
+          return;
+        }
+        showModelMenu(model.form, "");
+      });
+
+      document.addEventListener("input", function (event) {
+        var model = event.target;
+        if (!model || !model.matches || !model.matches('input[name="model"]')) {
+          return;
+        }
+        showModelMenu(model.form, model.value);
+      });
+
+      document.addEventListener("mousedown", function (event) {
+        var option = event.target.closest ? event.target.closest("[data-model-option]") : null;
+        if (option) {
+          event.preventDefault();
+        }
       });
 
       document.addEventListener("keydown", function (event) {
@@ -996,6 +1224,11 @@ const pageTemplate = `<!doctype html>
           lastModalOpener.focus();
         }
       });
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initializeModelPicker);
+      } else {
+        initializeModelPicker();
+      }
     })();
   </script>
   <style>
@@ -1013,6 +1246,13 @@ const pageTemplate = `<!doctype html>
     .brand { padding-bottom:22px; border-bottom:1px solid var(--line); margin-bottom:26px; }
     .sub { color:var(--muted); margin-top:5px; }
     .group { border:1px solid var(--line); border-radius:7px; padding:14px 12px 16px; background:#f8fafc; margin-bottom:22px; }
+    .model-picker { position:relative; }
+    .model-menu { position:absolute; left:12px; right:12px; top:calc(100% - 18px); z-index:20; max-height:260px; overflow:auto; border:1px solid #b8c6d8; border-radius:7px; background:white; box-shadow:0 14px 36px rgba(15,23,42,.16); padding:6px; }
+    .model-menu[hidden] { display:none; }
+    .model-option { display:block; width:100%; min-height:0; margin:0; border:0; border-radius:5px; background:white; color:var(--text); padding:8px 10px; text-align:left; cursor:pointer; font-weight:700; }
+    .model-option:hover { background:#eff6ff; }
+    .model-option small { display:block; margin-top:2px; color:#64748b; font-weight:600; }
+    .field-status { min-height:16px; margin:6px 0 0; color:#52627a; font-size:12px; }
     .row { display:flex; align-items:center; gap:8px; margin-top:16px; font-weight:700; font-size:13px; color:#334155; }
     .twocol { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
     button { width:100%; border:0; border-radius:7px; min-height:44px; padding:10px 14px; margin-top:22px; background:var(--blue); color:white; font-weight:800; font:inherit; cursor:pointer; }
@@ -1085,7 +1325,7 @@ const pageTemplate = `<!doctype html>
       </div>
       <form data-review-form hx-post="/check" hx-target="#results" hx-swap="innerHTML" hx-encoding="multipart/form-data">
         <input id="form_nonce" type="hidden" name="form_nonce" value="{{.FormNonce}}">
-        <div class="group">
+        <div class="group model-picker">
           <strong>Model</strong>
           <label for="provider">Provider</label>
           <select id="provider" name="provider">
@@ -1094,7 +1334,9 @@ const pageTemplate = `<!doctype html>
             <option value="gemini" {{if eq .DefaultProvider "gemini"}}selected{{end}}>Gemini</option>
           </select>
           <label for="model">Model</label>
-          <input id="model" name="model" value="{{.DefaultModel}}" placeholder="gpt-5.2">
+          <input id="model" name="model" value="{{.DefaultModel}}" placeholder="gpt-5.2" autocomplete="off" maxlength="120" aria-controls="model_options" aria-expanded="false">
+          <div id="model_options" class="model-menu" role="listbox" hidden></div>
+          <p id="model_picker_status" class="field-status" aria-live="polite"></p>
         </div>
         <label for="plan">Plan file</label>
         <input id="plan" name="plan" type="file" required>

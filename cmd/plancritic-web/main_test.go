@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dshills/plancritic/internal/llm"
 	"github.com/dshills/plancritic/internal/review"
 	"github.com/dshills/plancritic/internal/reviewer"
 )
@@ -36,7 +38,7 @@ func TestServeIndexRendersForm(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"PlanCritic", `href="/favicon.svg"`, `hx-post="/check"`, `data-review-form`, `data-check-button`, "pending-status", "Checking...", `name="plan"`, "gpt-test"} {
+	for _, want := range []string{"PlanCritic", `href="/favicon.svg"`, `hx-post="/check"`, `data-review-form`, `data-check-button`, "pending-status", "Checking...", `fetch("/models?provider="`, `id="model_options"`, `name="plan"`, "gpt-test"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)
 		}
@@ -57,6 +59,36 @@ func TestServeFavicon(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "<svg") {
 		t.Fatalf("favicon body missing svg: %q", rec.Body.String())
+	}
+}
+
+func TestServeModelsListsProviderModels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("Authorization = %q, want Bearer test-key", got)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.2"},{"id":"text-embedding-3-large"}]}`))
+	}))
+	defer upstream.Close()
+	originalURL := llm.OpenAIModelsAPIURLForTest()
+	llm.SetOpenAIModelsAPIURL(upstream.URL)
+	t.Cleanup(func() { llm.SetOpenAIModelsAPIURL(originalURL) })
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	srv := &webServer{base: reviewer.Options{ProviderName: "openai"}, runner: reviewer.Run}
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/models?provider=openai", nil)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload modelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Provider != "openai" || len(payload.Models) != 1 || payload.Models[0].ID != "gpt-5.2" {
+		t.Fatalf("payload = %#v", payload)
 	}
 }
 
@@ -99,7 +131,7 @@ func TestServeCheckRunsReviewAndRendersResult(t *testing.T) {
 						Description:    "The plan references migration work without ordering it before the rollout.",
 						Impact:         "The deployment can apply code before data is ready.",
 						Recommendation: "Move migration steps before rollout steps.",
-						Evidence:       []review.Evidence{{Source: "plan", Path: "plan.md", LineStart: 2, LineEnd: 2, Quote: "Do the migration"}},
+						Evidence:       []review.Evidence{{Source: "plan", Path: "plan-plan.md", LineStart: 2, LineEnd: 2, Quote: "Do the migration"}},
 					},
 				},
 				Questions: []review.Question{
