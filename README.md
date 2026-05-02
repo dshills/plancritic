@@ -18,6 +18,12 @@ cd plancritic
 go build -o plancritic ./cmd/plancritic
 ```
 
+The optional web UI is a separate binary:
+
+```bash
+go build -o plancritic-web ./cmd/plancritic-web
+```
+
 ## Configuration
 
 Set an API key for your LLM provider:
@@ -66,6 +72,30 @@ plancritic check plan.md --model anthropic/claude-opus-4-6
 
 # Verbose output (shows each pipeline stage)
 plancritic check plan.md --verbose
+```
+
+## Web UI
+
+`plancritic-web` runs a local HTMX interface for reviewing uploaded plan files.
+
+```bash
+# Build the web binary
+go build -o plancritic-web ./cmd/plancritic-web
+
+# Start the server
+./plancritic-web
+```
+
+By default it listens on `127.0.0.1:8080`. Open <http://127.0.0.1:8080>, choose a plan file, optionally add context files, then run the review. The web UI uses the same provider environment variables and review defaults as the CLI.
+
+Common overrides:
+
+```bash
+# Listen on a different local port
+./plancritic-web --addr 127.0.0.1:8100
+
+# Set defaults shown in the form
+./plancritic-web --provider openai --model gpt-5.2 --profile go-backend
 ```
 
 ## Flags

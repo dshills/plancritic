@@ -8,9 +8,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,9 +38,14 @@ func TestServeIndexRendersForm(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"PlanCritic", `href="/favicon.svg"`, `hx-post="/check"`, `data-review-form`, `data-check-button`, "pending-status", "Checking...", `fetch("/models?provider="`, `id="model_options"`, `name="plan_path"`, `data-open-plan`, `name="plan"`, "gpt-test"} {
+	for _, want := range []string{"PlanCritic", `href="/favicon.svg"`, `hx-post="/check"`, `data-review-form`, `data-check-button`, "pending-status", "Checking...", `fetch("/models?provider="`, `id="model_options"`, `name="plan"`, "gpt-test"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{"plan_path", "data-open-plan", "editor_status", "Open plan in editor"} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("index body still contains removed editor UI %q", unwanted)
 		}
 	}
 }
@@ -62,35 +64,6 @@ func TestServeFavicon(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "<svg") {
 		t.Fatalf("favicon body missing svg: %q", rec.Body.String())
-	}
-}
-
-func TestDefaultLocalPlanPathPrefersRootPlan(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "specs"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "specs", "PLAN.md"), []byte("# Specs Plan\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "PLAN.md"), []byte("# Root Plan\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if got := defaultLocalPlanPath(dir); got != "PLAN.md" {
-		t.Fatalf("defaultLocalPlanPath = %q, want PLAN.md", got)
-	}
-}
-
-func TestDefaultLocalPlanPathFallsBackToSpecsPlan(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "specs"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "specs", "PLAN.md"), []byte("# Specs Plan\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if got := defaultLocalPlanPath(dir); got != filepath.Join("specs", "PLAN.md") {
-		t.Fatalf("defaultLocalPlanPath = %q, want specs/PLAN.md", got)
 	}
 }
 
@@ -217,268 +190,6 @@ func TestServeCheckRunsReviewAndRendersResult(t *testing.T) {
 	}
 }
 
-func TestServeCheckUsesLocalPlanPath(t *testing.T) {
-	dir := t.TempDir()
-	planPath := filepath.Join(dir, "PLAN.md")
-	if err := os.WriteFile(planPath, []byte("# Plan\nUse local path\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	var gotPlan string
-	srv := &webServer{
-		localRoot: dir,
-		base: reviewer.Options{
-			ProfileName:       "general",
-			SeverityThreshold: "info",
-			RedactEnabled:     true,
-		},
-		runner: func(_ context.Context, planPath string, f reviewer.Options, _ string) (review.Review, error) {
-			gotPlan = planPath
-			return review.Review{
-				Input:   review.Input{Profile: f.ProfileName},
-				Summary: review.Summary{Verdict: review.VerdictExecutable, Score: 100},
-				Meta:    review.Meta{Model: "mock/default"},
-			}, nil
-		},
-	}
-
-	nonce := issueNonce(t, srv)
-	body, contentType := multipartBody(t, map[string]string{
-		"profile":    "general",
-		"form_nonce": nonce,
-		"plan_path":  "PLAN.md",
-	}, nil)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/check", body)
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Origin", "http://127.0.0.1")
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	wantPlan, err := filepath.EvalSymlinks(planPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotPlan != wantPlan {
-		t.Fatalf("plan path = %q, want %q", gotPlan, wantPlan)
-	}
-}
-
-func TestServeCheckPrefersUploadedPlanOverDefaultLocalPath(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "PLAN.md"), []byte("# Plan\nUse local path\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	var gotPlanContent string
-	srv := &webServer{
-		localRoot: dir,
-		base: reviewer.Options{
-			ProfileName:       "general",
-			SeverityThreshold: "info",
-			RedactEnabled:     true,
-		},
-		runner: func(_ context.Context, planPath string, f reviewer.Options, _ string) (review.Review, error) {
-			content, err := os.ReadFile(planPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			gotPlanContent = string(content)
-			return review.Review{
-				Input:   review.Input{Profile: f.ProfileName},
-				Summary: review.Summary{Verdict: review.VerdictExecutable, Score: 100},
-				Meta:    review.Meta{Model: "mock/default"},
-			}, nil
-		},
-	}
-
-	nonce := issueNonce(t, srv)
-	body, contentType := multipartBody(t, map[string]string{
-		"profile":    "general",
-		"form_nonce": nonce,
-		"plan_path":  "PLAN.md",
-	}, map[string]string{
-		"plan": "# Uploaded\nUse uploaded file\n",
-	})
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/check", body)
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Origin", "http://127.0.0.1")
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if !strings.Contains(gotPlanContent, "Use uploaded file") {
-		t.Fatalf("runner used wrong plan content: %q", gotPlanContent)
-	}
-}
-
-func TestServeCheckIssuesReplacementNonceForOpenPlan(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "PLAN.md"), []byte("# Plan\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	opened := false
-	srv := &webServer{
-		localRoot: dir,
-		base: reviewer.Options{
-			ProfileName:       "general",
-			SeverityThreshold: "info",
-			RedactEnabled:     true,
-		},
-		runner: func(context.Context, string, reviewer.Options, string) (review.Review, error) {
-			return review.Review{
-				Input:   review.Input{Profile: "general"},
-				Summary: review.Summary{Verdict: review.VerdictExecutable, Score: 100},
-				Meta:    review.Meta{Model: "mock/default"},
-			}, nil
-		},
-		openEditor: func(string, string) error {
-			opened = true
-			return nil
-		},
-	}
-	nonce := issueNonce(t, srv)
-	checkBody, checkContentType := multipartBody(t, map[string]string{
-		"profile":    "general",
-		"form_nonce": nonce,
-		"plan_path":  "PLAN.md",
-	}, nil)
-	checkReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/check", checkBody)
-	checkReq.Header.Set("Content-Type", checkContentType)
-	checkReq.Header.Set("Origin", "http://127.0.0.1")
-	checkRec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(checkRec, checkReq)
-	if checkRec.Code != http.StatusOK {
-		t.Fatalf("check status = %d, want %d: %s", checkRec.Code, http.StatusOK, checkRec.Body.String())
-	}
-	nextNonce := extractFormNonce(t, checkRec.Body.String())
-	if nextNonce == nonce {
-		t.Fatal("check response reused consumed nonce")
-	}
-
-	form := url.Values{"form_nonce": {nextNonce}, "plan_path": {"PLAN.md"}, "editor": {"default"}}
-	openReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/open-plan", strings.NewReader(form.Encode()))
-	openReq.RemoteAddr = "127.0.0.1:12345"
-	openReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	openReq.Header.Set("Origin", "http://127.0.0.1")
-	openRec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(openRec, openReq)
-	if openRec.Code != http.StatusOK {
-		t.Fatalf("open status = %d, want %d: %s", openRec.Code, http.StatusOK, openRec.Body.String())
-	}
-	if !opened {
-		t.Fatal("openEditor was not called")
-	}
-}
-
-func TestServeOpenPlanOpensEditor(t *testing.T) {
-	dir := t.TempDir()
-	planPath := filepath.Join(dir, "PLAN.md")
-	if err := os.WriteFile(planPath, []byte("# Plan\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	var gotEditor, gotPath string
-	srv := &webServer{
-		localRoot: dir,
-		runner:    reviewer.Run,
-		openEditor: func(editor, path string) error {
-			gotEditor = editor
-			gotPath = path
-			return nil
-		},
-	}
-	nonce := issueNonce(t, srv)
-	form := url.Values{
-		"form_nonce": {nonce},
-		"plan_path":  {"PLAN.md"},
-		"editor":     {"vscode"},
-	}
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/open-plan", strings.NewReader(form.Encode()))
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Origin", "http://127.0.0.1")
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	wantPlan, err := filepath.EvalSymlinks(planPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotEditor != "vscode" || gotPath != wantPlan {
-		t.Fatalf("open editor got editor=%q path=%q, want vscode %q", gotEditor, gotPath, wantPlan)
-	}
-	if strings.Contains(rec.Body.String(), wantPlan) {
-		t.Fatalf("response leaked resolved plan path: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"status":"opened"`) {
-		t.Fatalf("response missing opened status: %q", rec.Body.String())
-	}
-}
-
-func TestServeOpenPlanRejectsPathOutsideWorkingDirectory(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	planPath := filepath.Join(outside, "PLAN.md")
-	if err := os.WriteFile(planPath, []byte("# Plan\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	srv := &webServer{localRoot: root, runner: reviewer.Run, openEditor: func(string, string) error {
-		t.Fatal("openEditor should not be called")
-		return nil
-	}}
-	nonce := issueNonce(t, srv)
-	form := url.Values{
-		"form_nonce": {nonce},
-		"plan_path":  {planPath},
-		"editor":     {"default"},
-	}
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/open-plan", strings.NewReader(form.Encode()))
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Origin", "http://127.0.0.1")
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-	if strings.Contains(rec.Body.String(), planPath) {
-		t.Fatalf("response leaked rejected plan path: %s", rec.Body.String())
-	}
-}
-
-func TestServeOpenPlanRejectsNonLoopbackClient(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "PLAN.md"), []byte("# Plan\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	srv := &webServer{localRoot: dir, runner: reviewer.Run, openEditor: func(string, string) error {
-		t.Fatal("openEditor should not be called")
-		return nil
-	}}
-	nonce := issueNonce(t, srv)
-	form := url.Values{
-		"form_nonce": {nonce},
-		"plan_path":  {"PLAN.md"},
-		"editor":     {"default"},
-	}
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/open-plan", strings.NewReader(form.Encode()))
-	req.RemoteAddr = "192.0.2.10:54321"
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Origin", "http://127.0.0.1")
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-}
-
 func TestServeCheckRequiresPlanUpload(t *testing.T) {
 	srv := &webServer{
 		base:   reviewer.Options{ProfileName: "general"},
@@ -496,7 +207,7 @@ func TestServeCheckRequiresPlanUpload(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
-	if !strings.Contains(rec.Body.String(), "Missing plan file or local plan path") {
+	if !strings.Contains(rec.Body.String(), "Missing plan file") {
 		t.Fatalf("expected missing plan error, got %q", rec.Body.String())
 	}
 }
@@ -615,25 +326,4 @@ func issueNonce(t *testing.T, srv *webServer) string {
 		t.Fatal(err)
 	}
 	return nonce
-}
-
-func extractFormNonce(t *testing.T, body string) string {
-	t.Helper()
-	marker := `id="form_nonce"`
-	i := strings.Index(body, marker)
-	if i < 0 {
-		t.Fatalf("body missing form nonce: %s", body)
-	}
-	rest := body[i:]
-	valueMarker := `value="`
-	j := strings.Index(rest, valueMarker)
-	if j < 0 {
-		t.Fatalf("form nonce missing value: %s", body)
-	}
-	rest = rest[j+len(valueMarker):]
-	k := strings.Index(rest, `"`)
-	if k < 0 {
-		t.Fatalf("form nonce value not terminated: %s", body)
-	}
-	return rest[:k]
 }
