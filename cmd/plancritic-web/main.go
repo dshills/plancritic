@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"html/template"
 	"io"
 	"log"
@@ -111,9 +112,20 @@ func newServeCmd() *cobra.Command {
 
 func (s *webServer) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/favicon.svg", s.favicon)
 	mux.HandleFunc("/", s.index)
 	mux.HandleFunc("/check", s.check)
 	return mux
+}
+
+func (s *webServer) favicon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = io.WriteString(w, faviconSVG)
 }
 
 func (s *webServer) index(w http.ResponseWriter, r *http.Request) {
@@ -225,12 +237,14 @@ func (s *webServer) check(w http.ResponseWriter, r *http.Request) {
 		fail(err)
 		return
 	}
+	findings := findingsFromReview(rev, f.SeverityThreshold)
+	addPlanLineBadges(planLines, findings, planName)
 	data := resultData{
 		Review:     rev,
 		PlanName:   planName,
 		PlanLines:  planLines,
 		Elapsed:    time.Since(start).Round(100 * time.Millisecond).String(),
-		Findings:   findingsFromReview(rev, f.SeverityThreshold),
+		Findings:   findings,
 		ModelLabel: rev.Meta.Model,
 		FormNonce:  nextNonce,
 	}
@@ -562,14 +576,25 @@ type resultData struct {
 type numberedLine struct {
 	Number int
 	Text   string
+	Badges []lineBadge
+}
+
+type lineBadge struct {
+	DOMID         string
+	Label         string
+	SeverityClass string
 }
 
 type findingRow struct {
 	Kind          string
 	ID            string
+	DOMID         string
 	Severity      review.Severity
 	SeverityClass string
+	Category      string
 	Title         string
+	Detail        []string
+	Evidence      []review.Evidence
 }
 
 func displayPlanLines(path string) ([]numberedLine, error) {
@@ -619,15 +644,122 @@ func findingsFromReview(rev review.Review, threshold string) []findingRow {
 	normalizedThreshold := strings.ToLower(threshold)
 	for _, issue := range rev.Issues {
 		if meetsSeverityThreshold(issue.Severity, normalizedThreshold) {
-			rows = append(rows, findingRow{Kind: "ISSUE", ID: issue.ID, Severity: issue.Severity, SeverityClass: strings.ToUpper(string(issue.Severity)), Title: issue.Title})
+			rows = append(rows, findingRow{
+				Kind:          "ISSUE",
+				ID:            issue.ID,
+				DOMID:         domID("issue", issue.ID),
+				Severity:      issue.Severity,
+				SeverityClass: strings.ToUpper(string(issue.Severity)),
+				Category:      string(issue.Category),
+				Title:         issue.Title,
+				Detail:        nonEmptyStrings(issue.Description, issue.Impact, issue.Recommendation),
+				Evidence:      issue.Evidence,
+			})
 		}
 	}
 	for _, question := range rev.Questions {
 		if meetsSeverityThreshold(question.Severity, normalizedThreshold) {
-			rows = append(rows, findingRow{Kind: "QUESTION", ID: question.ID, Severity: question.Severity, SeverityClass: strings.ToUpper(string(question.Severity)), Title: question.Question})
+			rows = append(rows, findingRow{
+				Kind:          "QUESTION",
+				ID:            question.ID,
+				DOMID:         domID("question", question.ID),
+				Severity:      question.Severity,
+				SeverityClass: strings.ToUpper(string(question.Severity)),
+				Category:      "QUESTION",
+				Title:         question.Question,
+				Detail:        questionDetail(question),
+				Evidence:      question.Evidence,
+			})
 		}
 	}
 	return rows
+}
+
+func questionDetail(question review.Question) []string {
+	values := make([]string, 0, 1+len(question.SuggestedAnswers))
+	values = append(values, question.WhyNeeded)
+	values = append(values, question.SuggestedAnswers...)
+	return nonEmptyStrings(values...)
+}
+
+func addPlanLineBadges(lines []numberedLine, findings []findingRow, planName string) {
+	if len(lines) == 0 {
+		return
+	}
+	maxLine := lines[len(lines)-1].Number
+	byLine := make(map[int][]lineBadge)
+	seen := make(map[int]map[string]bool)
+	for _, finding := range findings {
+		for _, ev := range finding.Evidence {
+			if ev.Source != "plan" {
+				continue
+			}
+			if ev.Path != "" && filepath.Base(ev.Path) != planName {
+				continue
+			}
+			start := ev.LineStart
+			if start < 1 {
+				start = 1
+			}
+			if start > maxLine {
+				continue
+			}
+			end := ev.LineEnd
+			if end < start {
+				end = start
+			}
+			if end > maxLine {
+				end = maxLine
+			}
+			for n := start; n <= end; n++ {
+				if seen[n] == nil {
+					seen[n] = make(map[string]bool)
+				}
+				if seen[n][finding.DOMID] {
+					continue
+				}
+				seen[n][finding.DOMID] = true
+				byLine[n] = append(byLine[n], lineBadge{
+					DOMID:         finding.DOMID,
+					Label:         strings.TrimSpace(string(finding.Severity) + " " + finding.ID),
+					SeverityClass: finding.SeverityClass,
+				})
+			}
+		}
+	}
+	for i := range lines {
+		lines[i].Badges = byLine[lines[i].Number]
+	}
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func domID(prefix, id string) string {
+	var b strings.Builder
+	b.WriteString(prefix)
+	b.WriteByte('-')
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	b.WriteString("-")
+	b.WriteString(strconv.FormatUint(uint64(h.Sum32()), 16))
+	return b.String()
 }
 
 func meetsSeverityThreshold(severity review.Severity, threshold string) bool {
@@ -740,12 +872,21 @@ const (
 	maxIssuedNonces        = 1024
 )
 
+const faviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#111827"/>
+  <path d="M19 12h20l8 8v32H19z" fill="#f8fafc"/>
+  <path d="M39 12v9h8" fill="#dbeafe"/>
+  <path d="M25 29h17M25 36h12" stroke="#64748b" stroke-width="4" stroke-linecap="round"/>
+  <path d="M24 48l7-7 5 5 11-14" fill="none" stroke="#2563eb" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`
+
 const pageTemplate = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PlanCritic</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
   <script>
     document.addEventListener("htmx:beforeSwap", function (event) {
@@ -758,6 +899,7 @@ const pageTemplate = `<!doctype html>
     (function () {
       var timerID = 0;
       var startedAt = 0;
+      var lastModalOpener = null;
 
       function formFromEvent(event) {
         var elt = event.detail && event.detail.elt;
@@ -815,6 +957,45 @@ const pageTemplate = `<!doctype html>
           stopPending(form);
         }
       });
+
+      document.addEventListener("click", function (event) {
+        var opener = event.target.closest("[data-modal-target]");
+        if (opener) {
+          var modal = document.getElementById(opener.getAttribute("data-modal-target"));
+          if (modal) {
+            lastModalOpener = opener;
+            modal.hidden = false;
+            var close = modal.querySelector("[data-modal-close]");
+            if (close) {
+              close.focus();
+            }
+          }
+          return;
+        }
+        var closer = event.target.closest("[data-modal-close]");
+        var backdrop = event.target.classList && event.target.classList.contains("modal") ? event.target : null;
+        if (closer || backdrop) {
+          var active = backdrop || closer.closest(".modal");
+          if (active) {
+            active.hidden = true;
+            if (lastModalOpener) {
+              lastModalOpener.focus();
+            }
+          }
+        }
+      });
+
+      document.addEventListener("keydown", function (event) {
+        if (event.key !== "Escape") {
+          return;
+        }
+        document.querySelectorAll(".modal:not([hidden])").forEach(function (modal) {
+          modal.hidden = true;
+        });
+        if (lastModalOpener) {
+          lastModalOpener.focus();
+        }
+      });
     })();
   </script>
   <style>
@@ -857,7 +1038,8 @@ const pageTemplate = `<!doctype html>
     .critical { border-color:#fecaca; background:#fff1f2; }
     .warn { border-color:#fde68a; background:#fffbeb; }
     .info { border-color:#bfdbfe; background:#eff6ff; }
-    .finding { display:grid; grid-template-columns: 82px 92px minmax(0,1fr); gap:12px; align-items:center; border:1px solid var(--line); border-left:4px solid #94a3b8; border-radius:7px; padding:10px 12px; margin-top:8px; background:#f8fafc; }
+    .finding { width:100%; display:grid; grid-template-columns: 82px 92px minmax(0,1fr); gap:12px; align-items:center; border:1px solid var(--line); border-left:4px solid #94a3b8; border-radius:7px; padding:10px 12px; margin-top:8px; background:#f8fafc; color:var(--text); text-align:left; font-weight:400; cursor:pointer; }
+    .finding:hover { background:#f1f5f9; }
     .finding.CRITICAL { border-left-color:#ef4444; }
     .finding.WARN { border-left-color:#f59e0b; }
     .finding.INFO { border-left-color:#3b82f6; }
@@ -870,8 +1052,27 @@ const pageTemplate = `<!doctype html>
     .source { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:white; }
     .line { display:grid; grid-template-columns:64px minmax(0,1fr); border-bottom:1px solid #e5e7eb; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
     .line:last-child { border-bottom:0; }
+    .line.with-badges { background:#fffbeb; }
     .num { background:#e9eff6; color:#475569; text-align:right; padding:7px 10px; user-select:none; }
-    .code { padding:7px 12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .code { display:flex; justify-content:space-between; gap:16px; padding:7px 12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .line-text { min-width:0; }
+    .line-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; align-self:flex-start; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .line-badge { border:0; border-radius:999px; margin:0; min-height:0; width:auto; padding:4px 9px; background:#fef3c7; color:#92400e; font-size:11px; font-weight:900; cursor:pointer; }
+    .line-badge.CRITICAL { color:#991b1b; background:#fee2e2; }
+    .line-badge.INFO { color:#1e3a8a; background:#dbeafe; }
+    .modal[hidden] { display:none; }
+    .modal { position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center; padding:24px; background:rgba(15,23,42,.52); }
+    .modal-box { width:min(720px, 100%); max-height:min(80vh, 760px); overflow:auto; border-radius:7px; background:white; padding:24px; box-shadow:0 22px 70px rgba(15,23,42,.28); }
+    .modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:12px; }
+    .modal-head h3 { margin:0; font-size:22px; line-height:1.25; }
+    .modal-close { width:auto; min-height:0; margin:0; border:1px solid #c7d2fe; background:#f8fafc; color:#111827; padding:9px 12px; }
+    .modal-close:hover { background:#eef2ff; }
+    .modal-meta { margin:0 0 16px; }
+    .modal-meta strong { margin-right:5px; }
+    .modal-body p { margin:0 0 14px; line-height:1.45; }
+    .modal-evidence { margin-top:18px; border-top:1px solid #e5e7eb; padding-top:14px; }
+    .modal-evidence h4 { margin:0 0 8px; font-size:14px; }
+    .modal-evidence div { color:#475569; font-size:13px; margin-top:5px; }
     @media (max-width: 900px) { .shell { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } main { padding:18px; } .metrics { grid-template-columns:1fr 1fr; } .finding { grid-template-columns:74px 1fr; } .title { grid-column:1 / -1; white-space:normal; } }
   </style>
 </head>
@@ -941,12 +1142,20 @@ const resultTemplate = `<div class="status">Completed in {{.Elapsed}}.</div>
 </section>
 <section class="card">
   <h2>Findings</h2>
-  {{if .Findings}}{{range .Findings}}<div class="finding {{.SeverityClass}}"><span class="badge {{.SeverityClass}}">{{.Severity}}</span><span class="id">{{.ID}}</span><span class="title">{{.Title}}</span></div>{{end}}{{else}}<div class="placeholder">No findings at the selected severity.</div>{{end}}
+  {{if .Findings}}{{range .Findings}}<button type="button" class="finding {{.SeverityClass}}" data-modal-target="modal-{{.DOMID}}"><span class="badge {{.SeverityClass}}">{{.Severity}}</span><span class="id">{{.ID}}</span><span class="title">{{.Title}}</span></button>{{end}}{{else}}<div class="placeholder">No findings at the selected severity.</div>{{end}}
 </section>
 <section class="card">
   <h2>Plan Source</h2>
-  <div class="source">{{range .PlanLines}}<div class="line"><div class="num">{{.Number}}</div><div class="code">{{.Text}}</div></div>{{end}}</div>
-</section>`
+  <div class="source">{{range .PlanLines}}<div class="line {{if .Badges}}with-badges{{end}}"><div class="num">{{.Number}}</div><div class="code"><span class="line-text">{{.Text}}</span>{{if .Badges}}<span class="line-badges">{{range .Badges}}<button type="button" class="line-badge {{.SeverityClass}}" data-modal-target="modal-{{.DOMID}}">{{.Label}}</button>{{end}}</span>{{end}}</div></div>{{end}}</div>
+</section>
+{{range .Findings}}<div id="modal-{{.DOMID}}" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="title-{{.DOMID}}">
+    <div class="modal-head"><h3 id="title-{{.DOMID}}">{{.ID}} {{.Title}}</h3><button type="button" class="modal-close" data-modal-close>Close</button></div>
+    <div class="modal-meta"><strong>{{.Severity}}</strong>{{if .Category}} {{.Category}}{{end}}</div>
+    <div class="modal-body">{{if .Detail}}{{range .Detail}}<p>{{.}}</p>{{end}}{{else}}<p>No additional detail was returned for this finding.</p>{{end}}</div>
+    {{if .Evidence}}<div class="modal-evidence"><h4>Evidence</h4>{{range .Evidence}}<div>{{.Source}} {{.Path}}:{{.LineStart}}{{if ne .LineStart .LineEnd}}-{{.LineEnd}}{{end}}{{if .Quote}} - {{.Quote}}{{end}}</div>{{end}}</div>{{end}}
+  </div>
+</div>{{end}}`
 
 const errorTemplate = `<div class="status error">{{.}}</div>`
 

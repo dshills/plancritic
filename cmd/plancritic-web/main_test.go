@@ -36,10 +36,27 @@ func TestServeIndexRendersForm(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"PlanCritic", `hx-post="/check"`, `data-review-form`, `data-check-button`, "pending-status", "Checking...", `name="plan"`, "gpt-test"} {
+	for _, want := range []string{"PlanCritic", `href="/favicon.svg"`, `hx-post="/check"`, `data-review-form`, `data-check-button`, "pending-status", "Checking...", `name="plan"`, "gpt-test"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("index body missing %q", want)
 		}
+	}
+}
+
+func TestServeFavicon(t *testing.T) {
+	srv := &webServer{runner: reviewer.Run}
+	req := httptest.NewRequest(http.MethodGet, "/favicon.svg", nil)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+		t.Fatalf("Content-Type = %q, want image/svg+xml", got)
+	}
+	if !strings.Contains(rec.Body.String(), "<svg") {
+		t.Fatalf("favicon body missing svg: %q", rec.Body.String())
 	}
 }
 
@@ -74,10 +91,25 @@ func TestServeCheckRunsReviewAndRendersResult(t *testing.T) {
 					WarnCount:     1,
 				},
 				Issues: []review.Issue{
-					{ID: "ISSUE-0001", Severity: review.SeverityCritical, Title: "Missing migration order"},
+					{
+						ID:             "ISSUE-0001",
+						Severity:       review.SeverityCritical,
+						Category:       review.CategoryOrderingDependency,
+						Title:          "Missing migration order",
+						Description:    "The plan references migration work without ordering it before the rollout.",
+						Impact:         "The deployment can apply code before data is ready.",
+						Recommendation: "Move migration steps before rollout steps.",
+						Evidence:       []review.Evidence{{Source: "plan", Path: "plan.md", LineStart: 2, LineEnd: 2, Quote: "Do the migration"}},
+					},
 				},
 				Questions: []review.Question{
-					{ID: "Q-0001", Severity: review.SeverityWarn, Question: "Which database?"},
+					{
+						ID:        "Q-0001",
+						Severity:  review.SeverityWarn,
+						Question:  "Which database?",
+						WhyNeeded: "The implementation depends on the target database.",
+						Evidence:  []review.Evidence{{Source: "plan", Path: "plan.md", LineStart: 2, LineEnd: 2, Quote: "Do the migration"}},
+					},
 				},
 				Meta: review.Meta{Model: "mock/gpt-test"},
 			}, nil
@@ -114,7 +146,7 @@ func TestServeCheckRunsReviewAndRendersResult(t *testing.T) {
 	if gotFlags.ProfileName != "go-backend" || !gotFlags.Strict || gotFlags.MaxIssues != 12 || gotFlags.MaxQuestions != 7 {
 		t.Fatalf("unexpected flags: %+v", gotFlags)
 	}
-	for _, want := range []string{"Completed in", "NOT_EXECUTABLE", "Missing migration order", "Which database?", "Do the migration"} {
+	for _, want := range []string{"Completed in", "NOT_EXECUTABLE", "Missing migration order", "Which database?", "Do the migration", `data-modal-target="modal-issue-ISSUE-0001-`, `class="line-badge CRITICAL"`, "Move migration steps before rollout steps.", "The implementation depends on the target database."} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("result body missing %q", want)
 		}
