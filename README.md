@@ -78,6 +78,8 @@ plancritic check plan.md --verbose
 
 `plancritic-web` runs a local HTMX interface for reviewing uploaded plan files.
 
+![PlanCritic web UI](docs/web-ui.png)
+
 ```bash
 # Build the web binary
 go build -o plancritic-web ./cmd/plancritic-web
