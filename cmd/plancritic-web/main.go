@@ -18,7 +18,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,10 +40,13 @@ type serveFlags struct {
 }
 
 type reviewRunner func(context.Context, string, reviewer.Options, string) (review.Review, error)
+type editorOpener func(string, string) error
 
 type webServer struct {
 	base         reviewer.Options
 	runner       reviewRunner
+	openEditor   editorOpener
+	localRoot    string
 	nonceMu      sync.Mutex
 	issuedNonces map[string]time.Time
 	lastPrune    time.Time
@@ -51,6 +56,7 @@ var (
 	errCrossOriginRequest = errors.New("cross-origin review requests are not allowed")
 	errInvalidFormNonce   = errors.New("invalid form nonce")
 	errMissingUpload      = errors.New("missing upload")
+	errMissingPlanPath    = errors.New("missing local plan path")
 )
 
 func newServeCmd() *cobra.Command {
@@ -116,6 +122,7 @@ func (s *webServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/favicon.svg", s.favicon)
 	mux.HandleFunc("/models", s.models)
+	mux.HandleFunc("/open-plan", s.openPlan)
 	mux.HandleFunc("/", s.index)
 	mux.HandleFunc("/check", s.check)
 	return mux
@@ -134,6 +141,12 @@ func (s *webServer) favicon(w http.ResponseWriter, r *http.Request) {
 type modelsResponse struct {
 	Provider string          `json:"provider"`
 	Models   []llm.ModelInfo `json:"models"`
+}
+
+type openPlanResponse struct {
+	Status    string `json:"status"`
+	Message   string `json:"message,omitempty"`
+	FormNonce string `json:"form_nonce,omitempty"`
 }
 
 func (s *webServer) models(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +189,51 @@ func (s *webServer) models(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *webServer) openPlan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOriginRequest(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if !localClientRequest(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if !s.consumeFormNonce(r.FormValue("form_nonce")) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	nextNonce, err := s.issueFormNonce()
+	if err != nil {
+		writeOpenPlanResponse(w, http.StatusInternalServerError, "error", "Unable to refresh form token.", "")
+		return
+	}
+	path, err := resolveLocalPlanPath(r.FormValue("plan_path"), s.localRoot)
+	if err != nil {
+		log.Printf("plancritic web resolve local plan path failed: %v", err)
+		writeOpenPlanResponse(w, http.StatusBadRequest, "error", "Unable to open that local plan path.", nextNonce)
+		return
+	}
+	editor := strings.TrimSpace(r.FormValue("editor"))
+	opener := s.openEditor
+	if opener == nil {
+		opener = openExternalEditor
+	}
+	if err := opener(editor, path); err != nil {
+		log.Printf("plancritic web open editor failed: %v", err)
+		writeOpenPlanResponse(w, http.StatusInternalServerError, "error", "Unable to open editor.", nextNonce)
+		return
+	}
+	writeOpenPlanResponse(w, http.StatusOK, "opened", "", nextNonce)
+}
+
 func (s *webServer) index(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -206,6 +264,7 @@ func (s *webServer) index(w http.ResponseWriter, r *http.Request) {
 		DefaultNoCache:      s.base.NoCache,
 		DefaultMaxIssues:    s.base.MaxIssues,
 		DefaultMaxQuestions: s.base.MaxQuestions,
+		DefaultPlanPath:     defaultLocalPlanPath(s.localRoot),
 		FormNonce:           formNonce,
 	}
 	if data.DefaultProvider == "" {
@@ -242,7 +301,7 @@ func (s *webServer) check(w http.ResponseWriter, r *http.Request) {
 		defer r.MultipartForm.RemoveAll()
 	}
 	formNonce := r.FormValue("form_nonce")
-	if !s.validFormNonce(r, formNonce) {
+	if !s.consumeFormNonce(formNonce) {
 		renderError(w, errInvalidFormNonce)
 		return
 	}
@@ -262,7 +321,7 @@ func (s *webServer) check(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.RemoveAll(dir)
 
-	planPath, planName, err := saveUploadedFile(r.MultipartForm, "plan", dir)
+	planPath, planName, err := planPathFromRequest(r.MultipartForm, dir, r.FormValue("plan_path"), s.localRoot)
 	if err != nil {
 		fail(err)
 		return
@@ -438,7 +497,7 @@ func (s *webServer) issueFormNonce() (string, error) {
 	return nonce, nil
 }
 
-func (s *webServer) validFormNonce(r *http.Request, got string) bool {
+func (s *webServer) consumeFormNonce(got string) bool {
 	if got == "" {
 		return false
 	}
@@ -518,6 +577,59 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+func localClientRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return isLoopbackHost(host)
+}
+
+func openExternalEditor(editor, path string) error {
+	var name string
+	var args []string
+	switch strings.ToLower(strings.TrimSpace(editor)) {
+	case "", "default":
+		switch runtime.GOOS {
+		case "darwin":
+			name, args = "open", []string{"--", path}
+		case "linux":
+			name, args = "xdg-open", []string{path}
+		case "windows":
+			name, args = "rundll32", []string{"url.dll,FileProtocolHandler", path}
+		default:
+			return fmt.Errorf("unsupported platform %q", runtime.GOOS)
+		}
+	case "vscode":
+		if runtime.GOOS == "darwin" {
+			name, args = "open", []string{"-a", "Visual Studio Code", "--", path}
+		} else {
+			name, args = "code", []string{"--", path}
+		}
+	case "xcode":
+		if runtime.GOOS != "darwin" {
+			return fmt.Errorf("Xcode editor is only supported on macOS")
+		}
+		name, args = "open", []string{"-a", "Xcode", "--", path}
+	case "macvim":
+		if runtime.GOOS == "darwin" {
+			name, args = "open", []string{"-a", "MacVim", "--", path}
+		} else {
+			name, args = "mvim", []string{"--", path}
+		}
+	default:
+		return fmt.Errorf("unsupported editor %q", editor)
+	}
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		_ = cmd.Wait()
+	}()
+	return nil
+}
+
 func sanitizeUploadName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = filepath.Base(name)
@@ -549,6 +661,83 @@ func saveUploadedFile(form *multipart.Form, field, dir string) (string, string, 
 		return "", "", err
 	}
 	return path, files[0].Filename, nil
+}
+
+func planPathFromRequest(form *multipart.Form, dir, localPath, localRoot string) (string, string, error) {
+	if files := form.File["plan"]; len(files) > 0 && files[0].Filename != "" {
+		return saveUploadedFile(form, "plan", dir)
+	}
+	localPath = strings.TrimSpace(localPath)
+	if localPath != "" {
+		path, err := resolveLocalPlanPath(localPath, localRoot)
+		if err != nil {
+			return "", "", err
+		}
+		return path, filepath.Base(path), nil
+	}
+	path, name, err := saveUploadedFile(form, "plan", dir)
+	if err != nil {
+		if errors.Is(err, errMissingUpload) {
+			return "", "", fmt.Errorf("%w: plan file or local plan path", errMissingUpload)
+		}
+		return "", "", err
+	}
+	return path, name, nil
+}
+
+func resolveLocalPlanPath(raw, localRoot string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errMissingPlanPath
+	}
+	if strings.HasPrefix(raw, "~") {
+		return "", fmt.Errorf("local plan path must be relative to the server directory or absolute")
+	}
+	root := strings.TrimSpace(localRoot)
+	if root == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		root = cwd
+	}
+	path := raw
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("local plan path is a directory")
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("local plan path must be inside the server working directory")
+	}
+	return resolved, nil
+}
+
+func defaultLocalPlanPath(localRoot string) string {
+	for _, candidate := range []string{"PLAN.md", filepath.Join("specs", "PLAN.md")} {
+		if _, err := resolveLocalPlanPath(candidate, localRoot); err == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func saveUploadedFiles(form *multipart.Form, field, dir string) ([]string, error) {
@@ -608,6 +797,7 @@ type pageData struct {
 	DefaultNoCache      bool
 	DefaultMaxIssues    int
 	DefaultMaxQuestions int
+	DefaultPlanPath     string
 	FormNonce           string
 }
 
@@ -849,6 +1039,14 @@ func renderErrorWithNonce(w http.ResponseWriter, err error, nonce string) {
 	}
 }
 
+func writeOpenPlanResponse(w http.ResponseWriter, statusCode int, status, message, nonce string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(openPlanResponse{Status: status, Message: message, FormNonce: nonce}); err != nil {
+		log.Printf("plancritic web write open plan response: %v", err)
+	}
+}
+
 type errorData struct {
 	Message   string
 	FormNonce string
@@ -861,7 +1059,7 @@ func publicErrorMessage(err error) string {
 	case errors.Is(err, errInvalidFormNonce):
 		return "The review form expired. Reload the page and try again."
 	case errors.Is(err, errMissingUpload):
-		return "Missing plan file."
+		return "Missing plan file or local plan path."
 	}
 	var ee *reviewer.Error
 	if errors.As(err, &ee) {
@@ -1120,6 +1318,54 @@ const pageTemplate = `<!doctype html>
         }
       }
 
+      function showEditorStatus(form, message, isError) {
+        var status = form ? form.querySelector("#editor_status") : null;
+        if (!status) {
+          return;
+        }
+        status.textContent = message;
+        status.classList.toggle("error-text", !!isError);
+      }
+
+      function openPlanInEditor(form) {
+        var path = form.querySelector('input[name="plan_path"]');
+        var editor = form.querySelector('select[name="editor"]');
+        var nonce = form.querySelector('input[name="form_nonce"]');
+        if (!path || !path.value.trim()) {
+          showEditorStatus(form, "Enter a local plan path first.", true);
+          return;
+        }
+        var body = new URLSearchParams();
+        body.set("plan_path", path.value.trim());
+        body.set("editor", editor ? editor.value : "default");
+        body.set("form_nonce", nonce ? nonce.value : "");
+        showEditorStatus(form, "Opening editor...", false);
+        fetch("/open-plan", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString()
+        }).then(function (response) {
+          return response.text().then(function (text) {
+            var payload = {};
+            if (text) {
+              try { payload = JSON.parse(text); } catch (_) {}
+            }
+            if (payload.form_nonce && nonce) {
+              nonce.value = payload.form_nonce;
+            }
+            if (!response.ok) {
+              throw new Error(payload.message || text || response.statusText || "Unable to open editor.");
+            }
+            return payload;
+          });
+        }).then(function () {
+          showEditorStatus(form, "Opened in editor.", false);
+        }).catch(function (error) {
+          showEditorStatus(form, error.message.trim() || "Unable to open editor.", true);
+        });
+      }
+
       document.addEventListener("htmx:beforeRequest", function (event) {
         var form = formFromEvent(event);
         if (form) {
@@ -1144,6 +1390,14 @@ const pageTemplate = `<!doctype html>
             model.focus();
           }
           hideModelMenu(form);
+          return;
+        }
+        var editorButton = event.target.closest("[data-open-plan]");
+        if (editorButton) {
+          var editorForm = editorButton.closest("form");
+          if (editorForm) {
+            openPlanInEditor(editorForm);
+          }
           return;
         }
         var opener = event.target.closest("[data-modal-target]");
@@ -1253,6 +1507,12 @@ const pageTemplate = `<!doctype html>
     .model-option:hover { background:#eff6ff; }
     .model-option small { display:block; margin-top:2px; color:#64748b; font-weight:600; }
     .field-status { min-height:16px; margin:6px 0 0; color:#52627a; font-size:12px; }
+    .error-text { color:#991b1b; }
+    .inline-actions { display:flex; gap:8px; align-items:flex-end; }
+    .inline-actions > div { flex:1 1 auto; min-width:0; }
+    .inline-actions select { flex:0 0 92px; }
+    .icon-button { flex:0 0 44px; width:44px; min-height:42px; margin:0; padding:8px; display:inline-flex; align-items:center; justify-content:center; }
+    .icon-button svg { width:19px; height:19px; }
     .row { display:flex; align-items:center; gap:8px; margin-top:16px; font-weight:700; font-size:13px; color:#334155; }
     .twocol { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
     button { width:100%; border:0; border-radius:7px; min-height:44px; padding:10px 14px; margin-top:22px; background:var(--blue); color:white; font-weight:800; font:inherit; cursor:pointer; }
@@ -1338,8 +1598,22 @@ const pageTemplate = `<!doctype html>
           <div id="model_options" class="model-menu" role="listbox" hidden></div>
           <p id="model_picker_status" class="field-status" aria-live="polite"></p>
         </div>
-        <label for="plan">Plan file</label>
-        <input id="plan" name="plan" type="file" required>
+        <label for="plan_path">Local plan path</label>
+        <div class="inline-actions">
+          <div><input id="plan_path" name="plan_path" value="{{.DefaultPlanPath}}" placeholder="PLAN.md or specs/PLAN.md"></div>
+          <select id="editor" name="editor" aria-label="Editor">
+            <option value="default">Default</option>
+            <option value="vscode">VS Code</option>
+            <option value="xcode">Xcode</option>
+            <option value="macvim">MacVim</option>
+          </select>
+          <button type="button" class="icon-button" data-open-plan title="Open plan in editor" aria-label="Open plan in editor">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 14 20 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <p id="editor_status" class="field-status" aria-live="polite"></p>
+        <label for="plan">Plan file upload</label>
+        <input id="plan" name="plan" type="file">
         <label for="context">Context files</label>
         <input id="context" name="context" type="file" multiple>
         <label for="profile">Profile</label>
