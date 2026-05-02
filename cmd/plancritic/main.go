@@ -12,9 +12,9 @@ var version = "0.1.0"
 
 func main() {
 	root := &cobra.Command{
-		Use:     "plancritic",
-		Short:   "Review software implementation plans for contradictions, ambiguities, and risks",
-		Version: version,
+		Use:           "plancritic",
+		Short:         "Review software implementation plans for contradictions, ambiguities, and risks",
+		Version:       version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}

@@ -176,7 +176,7 @@ func TestRunCheckFailOnUnrecognized(t *testing.T) {
 		failOn:            "bogus_value",
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 3)
 }
 
@@ -272,7 +272,7 @@ func TestRunCheckHappyPath(t *testing.T) {
 		maxTokens:         4096,
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 0)
 }
 
@@ -284,7 +284,7 @@ func TestRunCheckMissingPlanFile(t *testing.T) {
 		severityThreshold: "info",
 		provider:          &llm.MockProvider{Response: "{}"},
 	}
-	err := runCheck("/nonexistent/plan.md", f)
+	err := runCheck(context.Background(), "/nonexistent/plan.md", f)
 	assertExitCode(t, err, 3)
 }
 
@@ -298,7 +298,7 @@ func TestRunCheckBadContextPath(t *testing.T) {
 		contextPaths:      []string{"/nonexistent/context.md"},
 		provider:          &llm.MockProvider{Response: "{}"},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 3)
 }
 
@@ -311,7 +311,7 @@ func TestRunCheckUnknownProfile(t *testing.T) {
 		severityThreshold: "info",
 		provider:          &llm.MockProvider{Response: "{}"},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 3)
 }
 
@@ -324,7 +324,7 @@ func TestRunCheckLLMError(t *testing.T) {
 		severityThreshold: "info",
 		provider:          &llm.MockProvider{Err: errors.New("model exploded")},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 4)
 }
 
@@ -337,7 +337,7 @@ func TestRunCheckLLMReturnsNonJSON(t *testing.T) {
 		severityThreshold: "info",
 		provider:          &llm.MockProvider{Response: "this is not json at all"},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 5)
 }
 
@@ -357,7 +357,7 @@ func TestRunCheckSchemaValidationFailsRepairSucceeds(t *testing.T) {
 		severityThreshold: "info",
 		provider:          mock,
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	// The first response has invalid severity, so validation fails.
 	// The second response (validMockResponse) should pass.
 	assertExitCode(t, err, 0)
@@ -379,7 +379,7 @@ func TestRunCheckSchemaValidationFailsBothAttempts(t *testing.T) {
 		severityThreshold: "info",
 		provider:          mock,
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 5)
 }
 
@@ -396,7 +396,7 @@ func TestRunCheckFormatMarkdown(t *testing.T) {
 		severityThreshold: "info",
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 0)
 
 	data, err := os.ReadFile(outPath)
@@ -417,7 +417,7 @@ func TestRunCheckFormatUnknown(t *testing.T) {
 		severityThreshold: "info",
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 3)
 }
 
@@ -434,7 +434,7 @@ func TestRunCheckOutFile(t *testing.T) {
 		severityThreshold: "info",
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 0)
 
 	data, err := os.ReadFile(outPath)
@@ -461,7 +461,7 @@ func TestRunCheckFailOn(t *testing.T) {
 		failOn:            "executable",
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 2)
 }
 
@@ -480,11 +480,14 @@ func TestRunCheckDebugWritesPromptFile(t *testing.T) {
 		debug:             true,
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 0)
 
-	debugPath := filepath.Join(tmpDir, "plancritic-debug-prompt.txt")
-	if _, err := os.Stat(debugPath); os.IsNotExist(err) {
+	matches, err := filepath.Glob(filepath.Join(tmpDir, "plancritic-debug-prompt-*.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) == 0 {
 		t.Error("expected debug prompt file to be created")
 	}
 }
@@ -507,15 +510,29 @@ func TestRunCheckRedactDisabled(t *testing.T) {
 
 	t.Chdir(dir)
 
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 0)
 
 	// When redact is disabled, the debug prompt should contain the secret
-	debugData, err := os.ReadFile(filepath.Join(dir, "plancritic-debug-prompt.txt"))
+	matches, err := filepath.Glob(filepath.Join(dir, "plancritic-debug-prompt-*.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(debugData), "sk-abc123secret") {
+	if len(matches) == 0 {
+		t.Fatal("expected debug prompt file")
+	}
+	found := false
+	for _, match := range matches {
+		debugData, err := os.ReadFile(match)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(debugData), "sk-abc123secret") {
+			found = true
+			break
+		}
+	}
+	if !found {
 		t.Error("expected secret to pass through when redact is disabled")
 	}
 }
@@ -533,7 +550,7 @@ func TestRunCheckSeverityThresholdCritical(t *testing.T) {
 		severityThreshold: "critical",
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 0)
 
 	data, err2 := os.ReadFile(outPath)
@@ -567,7 +584,7 @@ func TestRunCheckStrict(t *testing.T) {
 		strict:            true,
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 0)
 }
 
@@ -584,7 +601,7 @@ func TestRunCheckWithContext(t *testing.T) {
 		contextPaths:      []string{ctxPath},
 		provider:          &llm.MockProvider{Response: validMockResponse()},
 	}
-	err := runCheck(planPath, f)
+	err := runCheck(context.Background(), planPath, f)
 	assertExitCode(t, err, 0)
 }
 
