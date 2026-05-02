@@ -1,0 +1,129 @@
+# AGENTS.md
+
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+
+## Project Overview
+
+PlanCritic is a Go CLI tool that reviews software implementation plans (written by coding agents or engineers) and returns structured critique: contradictions, ambiguities, missing prerequisites, questions, and suggested patches. Output is JSON-first (Markdown is rendered from JSON). The full specification lives in `specs/SPEC.md`.
+
+## Build & Test Commands
+- **Build:** `go build -o plancritic ./cmd/plancritic`
+- **Test all:** `go test ./...`
+- **Test single package:** `go test ./internal/review`
+- **Test single test:** `go test ./internal/review -run TestScoreCalculation`
+- **Lint:** `golangci-lint run`
+
+## Architecture
+
+### Data Flow
+```
+Load plan + context files → Redact secrets → Build LLM prompt
+→ Call LLM provider → Parse & validate JSON → Post-process (score, sort, truncate)
+→ Optionally generate patch diff → Output JSON or render Markdown
+```
+
+### Package Layout
+- `cmd/plancritic` — CLI entry point (Cobra), `check` command orchestration
+- `internal/plan` — Read, line-number, hash plan files
+- `internal/context` — Load and line-number context files
+- `internal/redact` — Pattern-based secret redaction before LLM calls
+- `internal/profile` — Load YAML profile checklists (go:embed)
+- `internal/llm` — Provider interface with Anthropic and OpenAI implementations
+- `internal/prompt` — LLM prompt builder and repair prompt generation
+- `internal/schema` — JSON schema validation of LLM output
+- `internal/review` — Review types, deterministic scoring, sorting, grounding checks
+- `internal/render` — Markdown renderer from JSON
+- `internal/patch` — Unified diff file writer for plan text edits
+
+### Key Design Decisions
+- **Evidence-driven:** Every issue/question must reference specific plan excerpts with line ranges and quotes.
+- **Anti-hallucination:** The model must not invent repo facts; it only reasons about plan and context content.
+- **Deterministic scoring:** Score starts at 100, subtract 20/CRITICAL, 7/WARN, 2/INFO, clamp at 0.
+- **Ordering:** Issues sorted by severity (CRITICAL > WARN > INFO), then by `evidence[0].line_start`.
+- **Strict grounding mode (`--strict`):** Everything not in plan/context is unknown; uncertain inferences capped at WARN with `["assumption"]` tag.
+- **Output validation:** Parse LLM JSON, validate schema, retry once with repair prompt if invalid, exit code 5 if still invalid.
+
+### Key Enums
+- **Verdict:** `EXECUTABLE_AS_IS`, `EXECUTABLE_WITH_CLARIFICATIONS`, `NOT_EXECUTABLE`
+- **Severity:** `INFO`, `WARN`, `CRITICAL`
+- **Category:** `CONTRADICTION`, `AMBIGUITY`, `MISSING_PREREQUISITE`, `MISSING_ACCEPTANCE_CRITERIA`, `RISK_SECURITY`, `RISK_DATA`, `RISK_OPERATIONS`, `TEST_GAP`, `SCOPE_CREEP_RISK`, `UNREALISTIC_STEP`, `ORDERING_DEPENDENCY`, `UNSPECIFIED_INTERFACE`, `NON_DETERMINISM`
+
+### Exit Codes
+- 0: success / verdict below fail threshold
+- 2: verdict meets/exceeds fail threshold
+- 3: input error
+- 4: model/provider error
+- 5: schema validation error
+
+### Profiles
+Profiles are YAML checklists + constraints embedded in the binary via `go:embed`. Built-in profiles: `general` (default), `go-backend`, `react-frontend`, `aws-deploy`, `davin-go`. See `internal/profile/builtin/*.yaml`.
+
+### Phase 2 Seams (do not implement, but leave room)
+- `ReviewInput` struct should have an optional `Artifacts` list (diffs, test output)
+- Prompt builder should support additional evidence sources
+- Output schema should allow version bump / optional fields without breaking v1
+
+## Code Quality
+
+After writing or modifying code, run `prism review staged` before committing.
+If findings are severity high, fix them before proceeding.
+For security-sensitive changes, use compare mode:
+  prism review staged --compare openai:gpt-5.2,gemini:gemini-3-flash-preview
+
+## Conventions from the Spec
+- Prefer standard library; minimize dependencies (any new dep needs explicit justification)
+- Line-number plan text for the LLM using `L###:` prefix format
+- Redaction is on by default — replace secrets with `[REDACTED]`
+- JSON output must be strictly validated against the schema
+- Cap issues at 50, questions at 20; emit truncation warning if exceeded
+- Profiles are local files embedded in the binary, not fetched remotely
+
+## Code Search Protocol
+
+Use this decision tree — in order — before reading any source file:
+
+### Structural questions → atlas (always first)
+- "Where is X defined?" → `atlas find symbol X --agent`
+- "What calls X?" → `atlas who-calls X --agent`
+- "What does X call?" → `atlas calls X --agent`
+- "What implements interface X?" → `atlas implementations X --agent`
+- "Which tests cover X?" → `atlas tests-for X --agent`
+- "What routes exist?" → `atlas list routes --agent`
+- "What changed?" → `atlas index --since HEAD~1 && atlas stale --agent`
+
+### Before reading a large file → summarize first
+`atlas summarize file <path> --agent`
+Only read the file directly if the summary is insufficient.
+
+### Content/pattern questions → rg
+- Error strings, log messages, string literals
+- Comments, TODOs, inline notes
+- Non-Go/TS files (YAML, SQL, Markdown)
+- Unstaged files not yet indexed
+
+### Never read source files to answer these questions
+If atlas has the answer, do not use Read or Bash(cat).
+Atlas is authoritative — its index is maintained by a PostToolUse hook on Write/Edit/MultiEdit.
+
+## Pre-coding: run aperture
+
+Before starting any non-trivial code change in this repo, run aperture
+to plan context and check feasibility:
+
+    aperture plan TASK.md --format markdown
+
+If a `TASK.md` doesn't exist, pass the task inline:
+
+    aperture plan -p "<one-line task description>" --format markdown
+
+Interpret the output:
+- `feasibility.score < 0.70` or any `severity: blocking` gap → stop and
+  fix the task description or repo state. Do not lower the threshold to
+  get past the gate.
+- `load_mode: full` selections are the files to read first.
+- `reachable` files are discoverable follow-ups, not pre-loaded context.
+
+For an integrated run that plans, persists the manifest, and invokes
+the agent in one step:
+
+    aperture run <agent> TASK.md --fail-on-gaps --min-feasibility 0.70

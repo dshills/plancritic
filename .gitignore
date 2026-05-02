@@ -1,5 +1,8 @@
 # Binary (root only, not cmd/plancritic/ source dir)
 /plancritic
+/bin/
+/dist/
+/tmp/
 
 # Go
 *.exe
@@ -25,3 +28,5 @@ plancritic-debug-prompt.txt
 
 .claude
 .atlas
+.aperture
+.codex

@@ -1,0 +1,17 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/plancritic-web ./cmd/plancritic-web"
+  bin = "./tmp/plancritic-web"
+	entrypoint = ["./tmp/plancritic-web"]
+	args_bin = ["--addr", "127.0.0.1:8100"]
+  delay = 1000
+	include_dir = ["internal"]
+  exclude_dir = ["tmp", "vendor"]
+	include_ext = ["go", "html", "js", "css"]
+  exclude_regex = ["_test\\.go$"]
+  kill_delay = 500
+
+[misc]
+  clean_on_exit = true
