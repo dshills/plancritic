@@ -10,6 +10,7 @@ type pattern struct {
 	re        *regexp.Regexp
 	markers   []string // substrings that must appear for the regex to match
 	lowerCase bool     // if true, match markers against lower-cased input
+	repl      string   // replacement string; "" defaults to "[REDACTED]"
 }
 
 var patterns []pattern
@@ -21,11 +22,13 @@ func init() {
 			re:      regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
 			markers: []string{"AKIA"},
 		},
-		// AWS secret access keys (40 char base64 after common prefixes)
+		// AWS secret access keys (40 char base64 after common prefixes).
+		// Capture the separator so the original format is preserved.
 		{
-			re:        regexp.MustCompile(`(?i)(aws_secret_access_key|aws_secret)\s*[:=]\s*[A-Za-z0-9/+=]{40}`),
+			re:        regexp.MustCompile(`(?i)(aws_secret_access_key|aws_secret)(\s*[:=]\s*)[A-Za-z0-9/+=]{40}`),
 			markers:   []string{"aws_secret"},
 			lowerCase: true,
+			repl:      "${1}${2}[REDACTED]",
 		},
 		// Private key blocks
 		{
@@ -37,11 +40,30 @@ func init() {
 			re:      regexp.MustCompile(`Bearer\s+[A-Za-z0-9\-._~+/]+=*`),
 			markers: []string{"Bearer"},
 		},
-		// Generic key/secret/token/password assignments
+		// Generic key/secret/token/password assignments (YAML / .env / plain text).
+		// Includes aws_secret* so coverage is consistent with the JSON pattern below.
+		// Word boundaries on the key prevent matching compound names like "mypassword".
+		// Captures the separator so the original format is preserved in output.
+		// The value arm handles double-quoted, single-quoted, and bare values so
+		// multi-word quoted secrets (e.g. password: "my secret") are fully redacted.
 		{
-			re:        regexp.MustCompile(`(?i)(api[_-]?key|api[_-]?secret|secret[_-]?key|token|password|passwd|credentials)\s*[:=]\s*\S+`),
+			re:        regexp.MustCompile(`(?i)\b(api[_-]?key|api[_-]?secret|secret[_-]?key|token|password|passwd|credentials|aws_secret_access_key|aws_secret)\b(\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)`),
 			markers:   []string{"api", "secret", "token", "password", "passwd", "credentials"},
 			lowerCase: true,
+			repl:      "${1}${2}[REDACTED]",
+		},
+		// JSON-format secrets: "key": "value" — the [:=] pattern above misses
+		// quoted JSON keys/values because of surrounding double-quote chars.
+		// Word boundaries on the key prevent false positives on compound names.
+		// Captures the separator whitespace to preserve original formatting.
+		// The value pattern handles quoted strings with escape sequences and
+		// scalar non-string types (number, boolean, null) without consuming
+		// JSON structural delimiters like commas or closing braces.
+		{
+			re:        regexp.MustCompile(`(?i)"\b(api[_-]?key|api[_-]?secret|secret[_-]?key|token|password|passwd|credentials|aws_secret_access_key|aws_secret)\b"(\s*:\s*)(?:"(?:[^"\\]|\\.)*"|true|false|null|[0-9.eE+\-]+)`),
+			markers:   []string{"api", "secret", "token", "password", "passwd", "credentials"},
+			lowerCase: true,
+			repl:      `"${1}"${2}"[REDACTED]"`,
 		},
 	}
 
@@ -79,7 +101,11 @@ func Redact(text string) string {
 		if len(p.markers) > 0 && !containsAny(haystack, p.markers) {
 			continue
 		}
-		next := p.re.ReplaceAllString(text, "[REDACTED]")
+		repl := "[REDACTED]"
+		if p.repl != "" {
+			repl = p.repl
+		}
+		next := p.re.ReplaceAllString(text, repl)
 		if next != text {
 			text = next
 			// Redaction happened; invalidate the cached lower copy so
