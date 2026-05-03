@@ -1,12 +1,14 @@
 package review
 
+import "strings"
+
 // Verdict indicates the overall executability of the plan.
 type Verdict string
 
 const (
-	VerdictExecutable              Verdict = "EXECUTABLE_AS_IS"
-	VerdictWithClarifications      Verdict = "EXECUTABLE_WITH_CLARIFICATIONS"
-	VerdictNotExecutable           Verdict = "NOT_EXECUTABLE"
+	VerdictExecutable         Verdict = "EXECUTABLE_AS_IS"
+	VerdictWithClarifications Verdict = "EXECUTABLE_WITH_CLARIFICATIONS"
+	VerdictNotExecutable      Verdict = "NOT_EXECUTABLE"
 )
 
 func (v Verdict) Valid() bool {
@@ -34,8 +36,8 @@ func (s Severity) Valid() bool {
 	return false
 }
 
-// severityOrder returns a sort key (lower = higher priority).
-func (s Severity) order() int {
+// Order returns a sort key for severity (lower = higher priority).
+func (s Severity) Order() int {
 	switch s {
 	case SeverityCritical:
 		return 0
@@ -48,23 +50,36 @@ func (s Severity) order() int {
 	}
 }
 
+// ThresholdOrder returns the minimum Order() value that passes the given
+// threshold string ("critical", "warn", or anything else → info/all).
+func ThresholdOrder(threshold string) int {
+	switch strings.ToLower(threshold) {
+	case "critical":
+		return 0
+	case "warn":
+		return 1
+	default:
+		return 2
+	}
+}
+
 // Category classifies the type of issue found.
 type Category string
 
 const (
-	CategoryContradiction            Category = "CONTRADICTION"
-	CategoryAmbiguity                Category = "AMBIGUITY"
-	CategoryMissingPrerequisite      Category = "MISSING_PREREQUISITE"
+	CategoryContradiction             Category = "CONTRADICTION"
+	CategoryAmbiguity                 Category = "AMBIGUITY"
+	CategoryMissingPrerequisite       Category = "MISSING_PREREQUISITE"
 	CategoryMissingAcceptanceCriteria Category = "MISSING_ACCEPTANCE_CRITERIA"
-	CategoryRiskSecurity             Category = "RISK_SECURITY"
-	CategoryRiskData                 Category = "RISK_DATA"
-	CategoryRiskOperations           Category = "RISK_OPERATIONS"
-	CategoryTestGap                  Category = "TEST_GAP"
-	CategoryScopeCreepRisk           Category = "SCOPE_CREEP_RISK"
-	CategoryUnrealisticStep          Category = "UNREALISTIC_STEP"
-	CategoryOrderingDependency       Category = "ORDERING_DEPENDENCY"
-	CategoryUnspecifiedInterface     Category = "UNSPECIFIED_INTERFACE"
-	CategoryNonDeterminism           Category = "NON_DETERMINISM"
+	CategoryRiskSecurity              Category = "RISK_SECURITY"
+	CategoryRiskData                  Category = "RISK_DATA"
+	CategoryRiskOperations            Category = "RISK_OPERATIONS"
+	CategoryTestGap                   Category = "TEST_GAP"
+	CategoryScopeCreepRisk            Category = "SCOPE_CREEP_RISK"
+	CategoryUnrealisticStep           Category = "UNREALISTIC_STEP"
+	CategoryOrderingDependency        Category = "ORDERING_DEPENDENCY"
+	CategoryUnspecifiedInterface      Category = "UNSPECIFIED_INTERFACE"
+	CategoryNonDeterminism            Category = "NON_DETERMINISM"
 )
 
 func (c Category) Valid() bool {

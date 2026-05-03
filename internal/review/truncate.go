@@ -7,7 +7,9 @@ const (
 
 // Truncate caps issues and questions to the given limits.
 // If either list exceeds its limit, it is truncated and a synthetic
-// WARN issue is appended noting the truncation.
+// WARN issue is appended noting the truncation. The synthetic notice
+// always counts toward maxIssues, so the final Issues slice never
+// exceeds the cap.
 func Truncate(r *Review, maxIssues, maxQuestions int) {
 	if maxIssues <= 0 {
 		maxIssues = DefaultMaxIssues
@@ -18,7 +20,7 @@ func Truncate(r *Review, maxIssues, maxQuestions int) {
 
 	truncated := false
 
-	if len(r.Issues) > maxIssues {
+	if len(r.Issues) > maxIssues-1 {
 		r.Issues = r.Issues[:maxIssues-1]
 		truncated = true
 	}

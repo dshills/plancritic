@@ -218,11 +218,15 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	result = llm.ExtractJSON(result)
 	var rev review.Review
 	if err := json.Unmarshal([]byte(result), &rev); err != nil {
-		// Try sanitizing invalid escape sequences (common with Gemini)
+		// Try sanitizing invalid escape sequences (common with Gemini).
+		// Use a fresh Review so partial fields from the failed unmarshal
+		// don't bleed into the retry result.
 		sanitized := llm.SanitizeJSON(result)
-		if err2 := json.Unmarshal([]byte(sanitized), &rev); err2 != nil {
+		var rev2 review.Review
+		if err2 := json.Unmarshal([]byte(sanitized), &rev2); err2 != nil {
 			return review.Review{}, Errorf(5, "failed to parse LLM response as JSON: %v (pre-sanitize: %v)", err2, err)
 		}
+		rev = rev2
 		verbose("Sanitized invalid JSON escape sequences")
 		result = sanitized
 	}
@@ -296,7 +300,6 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	// 11. Post-process
 	review.SortIssues(rev.Issues)
 	review.SortQuestions(rev.Questions)
-	review.Truncate(&rev, maxIssues, maxQuestions)
 
 	// Strict grounding post-check
 	if f.Strict {
@@ -308,9 +311,12 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		}
 	}
 
-	// Apply severity threshold filter
-	rev.Issues = filterBySeverity(rev.Issues, f.SeverityThreshold)
-	rev.Questions = filterQuestionsBySeverity(rev.Questions, f.SeverityThreshold)
+	// Apply severity threshold filter before truncation so the cap applies
+	// to the user-visible set and the truncation notice is never filtered out.
+	rev.Issues = review.FilterBySeverity(rev.Issues, f.SeverityThreshold)
+	rev.Questions = review.FilterQuestionsBySeverity(rev.Questions, f.SeverityThreshold)
+	review.Truncate(&rev, maxIssues, maxQuestions)
+
 	// Compute deterministic summary from final issue list
 	rev.Summary = review.ComputeSummary(rev.Issues)
 
@@ -458,50 +464,6 @@ func ensureGeminiCache(ctx context.Context, provider llm.Provider, segments []ll
 	}
 	verbose("Created Gemini cache: %s (expires %s)", handle.Name, handle.ExpiresAt.Format(time.RFC3339))
 	return handle.Name, nil
-}
-
-func filterBySeverity(issues []review.Issue, threshold string) []review.Issue {
-	minOrder := severityThresholdOrder(threshold)
-	var result []review.Issue
-	for _, iss := range issues {
-		if !iss.Severity.Valid() || severityOrder(iss.Severity) <= minOrder {
-			result = append(result, iss)
-		}
-	}
-	return result
-}
-
-func filterQuestionsBySeverity(questions []review.Question, threshold string) []review.Question {
-	minOrder := severityThresholdOrder(threshold)
-	var result []review.Question
-	for _, q := range questions {
-		if !q.Severity.Valid() || severityOrder(q.Severity) <= minOrder {
-			result = append(result, q)
-		}
-	}
-	return result
-}
-
-func severityOrder(s review.Severity) int {
-	switch s {
-	case review.SeverityCritical:
-		return 0
-	case review.SeverityWarn:
-		return 1
-	default:
-		return 2
-	}
-}
-
-func severityThresholdOrder(threshold string) int {
-	switch strings.ToLower(threshold) {
-	case "critical":
-		return 0
-	case "warn":
-		return 1
-	default:
-		return 2 // info shows everything
-	}
 }
 
 // estimatedCharsPerToken is a rough heuristic for converting prompt

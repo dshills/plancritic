@@ -31,9 +31,9 @@ func TestSeverityThresholdOrder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := severityThresholdOrder(tt.input)
+			got := review.ThresholdOrder(tt.input)
 			if got != tt.want {
-				t.Errorf("severityThresholdOrder(%q) = %d, want %d", tt.input, got, tt.want)
+				t.Errorf("review.ThresholdOrder(%q) = %d, want %d", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -57,13 +57,13 @@ func TestFilterBySeverity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.threshold, func(t *testing.T) {
-			got := filterBySeverity(issues, tt.threshold)
+			got := review.FilterBySeverity(issues, tt.threshold)
 			if len(got) != len(tt.wantIDs) {
-				t.Fatalf("filterBySeverity(%q) returned %d issues, want %d", tt.threshold, len(got), len(tt.wantIDs))
+				t.Fatalf("review.FilterBySeverity(%q) returned %d issues, want %d", tt.threshold, len(got), len(tt.wantIDs))
 			}
 			for i, id := range tt.wantIDs {
 				if got[i].ID != id {
-					t.Errorf("filterBySeverity(%q)[%d].ID = %q, want %q", tt.threshold, i, got[i].ID, id)
+					t.Errorf("review.FilterBySeverity(%q)[%d].ID = %q, want %q", tt.threshold, i, got[i].ID, id)
 				}
 			}
 		})
@@ -75,12 +75,12 @@ func TestFilterBySeverityKeepsInvalid(t *testing.T) {
 		{ID: "C1", Severity: review.SeverityCritical, Category: review.CategoryContradiction},
 		{ID: "BAD", Severity: review.Severity("BOGUS"), Category: review.CategoryAmbiguity},
 	}
-	got := filterBySeverity(issues, "info")
+	got := review.FilterBySeverity(issues, "info")
 	if len(got) != 2 {
 		t.Errorf("expected 2 issues (invalid severity kept), got %d", len(got))
 	}
 	// Even with threshold "critical", invalid severity items are kept
-	got2 := filterBySeverity(issues, "critical")
+	got2 := review.FilterBySeverity(issues, "critical")
 	if len(got2) != 2 {
 		t.Errorf("expected 2 issues with critical threshold (invalid kept), got %d", len(got2))
 	}
@@ -103,7 +103,7 @@ func TestFilterQuestionsBySeverity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.threshold, func(t *testing.T) {
-			got := filterQuestionsBySeverity(questions, tt.threshold)
+			got := review.FilterQuestionsBySeverity(questions, tt.threshold)
 			if len(got) != len(tt.wantIDs) {
 				t.Fatalf("got %d questions, want %d", len(got), len(tt.wantIDs))
 			}

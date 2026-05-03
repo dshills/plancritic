@@ -6,8 +6,8 @@ import "sort"
 // then by first evidence line_start ascending.
 func SortIssues(issues []Issue) {
 	sort.SliceStable(issues, func(i, j int) bool {
-		oi := issues[i].Severity.order()
-		oj := issues[j].Severity.order()
+		oi := issues[i].Severity.Order()
+		oj := issues[j].Severity.Order()
 		if oi != oj {
 			return oi < oj
 		}
@@ -18,8 +18,8 @@ func SortIssues(issues []Issue) {
 // SortQuestions sorts questions by severity then by first evidence line_start.
 func SortQuestions(questions []Question) {
 	sort.SliceStable(questions, func(i, j int) bool {
-		oi := questions[i].Severity.order()
-		oj := questions[j].Severity.order()
+		oi := questions[i].Severity.Order()
+		oj := questions[j].Severity.Order()
 		if oi != oj {
 			return oi < oj
 		}

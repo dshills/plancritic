@@ -171,8 +171,9 @@ func runReview(parentCtx context.Context, planPath string, f *checkFlags) (revie
 		if errors.As(err, &re) {
 			return review.Review{}, exitError(re.Code, "%s", re.Msg)
 		}
+		return review.Review{}, exitError(4, "%v", err)
 	}
-	return rev, err
+	return rev, nil
 }
 
 type exitErr struct {
@@ -192,50 +193,6 @@ func verboseLogger(enabled bool) func(string, ...any) {
 		if enabled {
 			logger.Printf(msg, args...)
 		}
-	}
-}
-
-func filterBySeverity(issues []review.Issue, threshold string) []review.Issue {
-	minOrder := severityThresholdOrder(threshold)
-	var result []review.Issue
-	for _, iss := range issues {
-		if !iss.Severity.Valid() || severityOrder(iss.Severity) <= minOrder {
-			result = append(result, iss)
-		}
-	}
-	return result
-}
-
-func filterQuestionsBySeverity(questions []review.Question, threshold string) []review.Question {
-	minOrder := severityThresholdOrder(threshold)
-	var result []review.Question
-	for _, q := range questions {
-		if !q.Severity.Valid() || severityOrder(q.Severity) <= minOrder {
-			result = append(result, q)
-		}
-	}
-	return result
-}
-
-func severityOrder(s review.Severity) int {
-	switch s {
-	case review.SeverityCritical:
-		return 0
-	case review.SeverityWarn:
-		return 1
-	default:
-		return 2
-	}
-}
-
-func severityThresholdOrder(threshold string) int {
-	switch strings.ToLower(threshold) {
-	case "critical":
-		return 0
-	case "warn":
-		return 1
-	default:
-		return 2 // info shows everything
 	}
 }
 
@@ -285,10 +242,6 @@ func envFloat(key string, fallback float64) float64 {
 	}
 	return f
 }
-
-// estimatedCharsPerToken is a rough heuristic for converting prompt
-// character count to an approximate token count across LLM providers.
-const estimatedCharsPerToken = 4
 
 var validFailOnValues = map[string]int{
 	"executable":     0,
