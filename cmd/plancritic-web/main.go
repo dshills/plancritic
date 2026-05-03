@@ -243,7 +243,7 @@ func (s *webServer) check(w http.ResponseWriter, r *http.Request) {
 		renderError(w, fmt.Errorf("failed to parse form: missing multipart data"))
 		return
 	}
-	defer form.RemoveAll()
+	defer func() { _ = form.RemoveAll() }()
 	formNonce := r.FormValue("form_nonce")
 	if !s.consumeFormNonce(formNonce) {
 		renderError(w, errInvalidFormNonce)
@@ -263,7 +263,7 @@ func (s *webServer) check(w http.ResponseWriter, r *http.Request) {
 		fail(err)
 		return
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	planPath, planName, err := saveUploadedFile(form, "plan", dir)
 	if err != nil {
@@ -581,7 +581,7 @@ func saveFileHeader(fh *multipart.FileHeader, dir, prefix string) (path string, 
 	if err != nil {
 		return "", err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	name := sanitizeUploadName(fh.Filename)
 	if name == "." || name == string(filepath.Separator) {
@@ -657,7 +657,7 @@ func displayPlanLines(path string) ([]numberedLine, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 4096), maxPreviewLineBytes)

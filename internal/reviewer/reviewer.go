@@ -372,11 +372,14 @@ func writeDebugFile(dir, pattern string, data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if err := f.Chmod(0600); err != nil {
+	// os.CreateTemp already creates the file with mode 0600; no Chmod needed.
+	// defer is the panic/early-return safety net; the explicit Close below
+	// captures write-flush errors. Calling Close twice on *os.File is safe.
+	defer func() { _ = f.Close() }()
+	if _, err = f.Write(data); err != nil {
 		return "", err
 	}
-	if _, err := f.Write(data); err != nil {
+	if err = f.Close(); err != nil {
 		return "", err
 	}
 	return f.Name(), nil
