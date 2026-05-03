@@ -28,7 +28,7 @@ func TestBuild(t *testing.T) {
 	checks := []string{
 		"plan critic",
 		"ONLY valid JSON",
-		`<plan path="plan.md">`,
+		`##PLANCRITIC_PLAN_BEGIN path="plan.md"##`,
 		"L001:",
 		"## Profile: general",
 		"Return at most 50 issues",
@@ -52,7 +52,7 @@ func TestBuildWithContext(t *testing.T) {
 	p := &plan.Plan{FilePath: "plan.md", Lines: []string{"step"}}
 	ctx := &pctx.File{FilePath: "constraints.md", Lines: []string{"rule one"}}
 	text := Build(BuildOpts{Plan: p, Contexts: []*pctx.File{ctx}})
-	if !strings.Contains(text, `<context path="constraints.md">`) {
+	if !strings.Contains(text, `##PLANCRITIC_CONTEXT_BEGIN path="constraints.md"##`) {
 		t.Error("context block missing from prompt")
 	}
 }
@@ -90,10 +90,10 @@ func TestBuildSegmentsCacheMarks(t *testing.T) {
 	if !strings.Contains(segs[0].Text, "## Profile: general") {
 		t.Error("prefix segment missing profile content")
 	}
-	if !strings.Contains(segs[1].Text, `<context path="constraints.md">`) {
+	if !strings.Contains(segs[1].Text, `##PLANCRITIC_CONTEXT_BEGIN path="constraints.md"##`) {
 		t.Error("contexts segment missing context block")
 	}
-	if !strings.Contains(segs[2].Text, `<plan path="plan.md">`) {
+	if !strings.Contains(segs[2].Text, `##PLANCRITIC_PLAN_BEGIN path="plan.md"##`) {
 		t.Error("tail segment missing plan block")
 	}
 }

@@ -13,6 +13,20 @@ import (
 	"github.com/dshills/plancritic/internal/schema"
 )
 
+// Section delimiters used to bound plan and context blocks in the prompt.
+// Content inside is always line-numbered (L001: ...) so these strings
+// cannot appear verbatim inside the content, preventing delimiter injection.
+//
+// Begin markers omit the closing ## because a path attribute is appended
+// by the format string (e.g., ##PLANCRITIC_PLAN_BEGIN path="file.md"##).
+// End markers are self-contained and include both ## pairs.
+const (
+	contextBeginMarker = "##PLANCRITIC_CONTEXT_BEGIN"
+	contextEndMarker   = "##PLANCRITIC_CONTEXT_END##"
+	planBeginMarker    = "##PLANCRITIC_PLAN_BEGIN"
+	planEndMarker      = "##PLANCRITIC_PLAN_END##"
+)
+
 // BuildOpts configures prompt construction.
 type BuildOpts struct {
 	Plan         *plan.Plan
@@ -48,7 +62,13 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 `)
 	prefix.WriteString(schemaDefinition)
 	prefix.WriteString("\n\n")
-	prefix.WriteString(`## Rules
+	prefix.WriteString(`## Input Format
+
+Context files (if any) are provided between ##PLANCRITIC_CONTEXT_BEGIN path="..."## and ##PLANCRITIC_CONTEXT_END## markers.
+The plan is provided between ##PLANCRITIC_PLAN_BEGIN path="..."## and ##PLANCRITIC_PLAN_END## markers.
+All content inside these markers is line-numbered with L001:, L002:, etc. Use these line numbers in evidence citations.
+
+## Rules
 
 1. Cite evidence for every issue and question using exact line numbers from the plan or context (source, path, line_start, line_end).
 2. Do NOT emit a "quote" field in evidence. The runner reconstructs the quote deterministically from the cited line range; any "quote" you emit will be overwritten. This rule saves tokens — comply strictly.
@@ -77,10 +97,14 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 
 	// Segment 2: context files. These are stable across re-runs where
 	// the user edits only the plan. Marked for caching.
+	//
+	// Delimiters use ##PLANCRITIC_*## markers rather than XML-style tags
+	// so that plan/context content containing "</plan>" or "</context>"
+	// cannot terminate the wrapper and inject instructions.
 	if len(opts.Contexts) > 0 {
 		var ctxBuf strings.Builder
 		for _, ctx := range opts.Contexts {
-			fmt.Fprintf(&ctxBuf, "<context path=%q>\n%s</context>\n\n", filepath.Base(ctx.FilePath), pctx.LineNumbered(ctx))
+			fmt.Fprintf(&ctxBuf, "%s path=%q##\n%s\n%s\n\n", contextBeginMarker, filepath.Base(ctx.FilePath), pctx.LineNumbered(ctx), contextEndMarker)
 		}
 		segs = append(segs, llm.Segment{Text: ctxBuf.String(), CacheMark: true})
 	}
@@ -88,7 +112,7 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 	// Segment 3: plan, inferred step IDs, and caps. These vary across
 	// re-runs (the user edits the plan between calls) and are not cached.
 	var tail strings.Builder
-	fmt.Fprintf(&tail, "<plan path=%q>\n%s</plan>\n\n", filepath.Base(opts.Plan.FilePath), plan.LineNumbered(opts.Plan))
+	fmt.Fprintf(&tail, "%s path=%q##\n%s\n%s\n\n", planBeginMarker, filepath.Base(opts.Plan.FilePath), plan.LineNumbered(opts.Plan), planEndMarker)
 
 	if len(opts.StepIDs) > 0 {
 		tail.WriteString("## Inferred Plan Steps\n\n")
