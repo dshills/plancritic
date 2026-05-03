@@ -351,6 +351,12 @@ func TestGeminiCreateCacheRequest(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		if got := r.URL.Query().Get("key"); got != "" {
+			t.Errorf("Gemini cache API key should not be in URL query, got %q", got)
+		}
+		if got := r.Header.Get("x-goog-api-key"); got != "test-key" {
+			t.Errorf("Gemini cache API key header = %q, want test-key", got)
+		}
 		_ = json.NewDecoder(r.Body).Decode(&captured)
 		resp := geminiCacheCreateResponse{
 			Name:       "cachedContents/test-xyz",
@@ -574,9 +580,11 @@ func TestGeminiProviderGenerate(t *testing.T) {
 		if r.Header.Get("Content-Type") != "application/json" {
 			t.Error("missing Content-Type header")
 		}
-		// Verify API key is in the URL query param
-		if r.URL.Query().Get("key") != "test-key" {
-			t.Error("missing API key in URL")
+		if got := r.URL.Query().Get("key"); got != "" {
+			t.Errorf("Gemini API key should not be in URL query, got %q", got)
+		}
+		if got := r.Header.Get("x-goog-api-key"); got != "test-key" {
+			t.Errorf("Gemini API key header = %q, want test-key", got)
 		}
 
 		resp := geminiResponse{

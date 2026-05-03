@@ -108,12 +108,13 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 		return "", Usage{}, fmt.Errorf("gemini: marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", g.apiURL, strings.TrimPrefix(model, "models/"), g.apiKey)
+	url := fmt.Sprintf("%s/models/%s:generateContent", g.apiURL, strings.TrimPrefix(model, "models/"))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("gemini: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.client.Do(req)
 	if err != nil {
@@ -198,12 +199,13 @@ func (g *GeminiProvider) CreateCache(ctx context.Context, segments []Segment, mo
 		return CacheHandle{}, fmt.Errorf("gemini: marshal cache request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/cachedContents?key=%s", g.apiURL, g.apiKey)
+	url := fmt.Sprintf("%s/cachedContents", g.apiURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return CacheHandle{}, fmt.Errorf("gemini: create cache request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.client.Do(req)
 	if err != nil {
