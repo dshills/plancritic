@@ -50,6 +50,13 @@ type Options struct {
 	// NoResultCache disables only the local on-disk result cache;
 	// provider-side prompt caching is unaffected. NoCache disables both.
 	NoResultCache bool
+	// Patches asks the model for unified-diff patch suggestions; the CLI
+	// sets it only when --patch-out is given. Checklists asks for a
+	// PASS/FAIL/N/A evaluation of every profile checklist item. Both are
+	// off by default because they are the most expensive parts of a
+	// response and rarely consumed by agents.
+	Patches    bool
+	Checklists bool
 	// ResultCacheDir overrides where cached reviews are stored. Empty
 	// selects resultcache.DefaultDir, which honors PLANCRITIC_CACHE_DIR.
 	ResultCacheDir string
@@ -132,6 +139,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	if maxQuestions <= 0 {
 		maxQuestions = review.DefaultMaxQuestions
 	}
+	shape := schema.OutputShape{Patches: f.Patches, Checklists: f.Checklists}
 	promptOpts := prompt.BuildOpts{
 		Plan:         p,
 		Contexts:     contexts,
@@ -140,6 +148,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		StepIDs:      stepIDs,
 		MaxIssues:    maxIssues,
 		MaxQuestions: maxQuestions,
+		Shape:        shape,
 	}
 	promptSegments := prompt.BuildSegments(promptOpts)
 	if f.NoCache {
@@ -261,7 +270,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		// Providers with native structured output enforce the shape at
 		// the source; the prompt still carries the same schema as text
 		// for providers (and models) without it.
-		OutputSchema: schema.ModelOutputSchemaJSON(),
+		OutputSchema: schema.ModelOutputSchemaJSON(shape),
 	}
 	if f.HasSeed {
 		settings.Seed = &f.Seed
@@ -361,6 +370,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			PlanLines:         len(p.Lines),
 			ContextLineCounts: contextLineCounts,
 			Sources:           prompt.RenderSources(p, contexts),
+			Shape:             shape,
 		}, verbose)
 		if err != nil {
 			return review.Review{}, err

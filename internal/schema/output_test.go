@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -47,11 +48,13 @@ func walkStrict(t *testing.T, path string, node any) {
 }
 
 func TestModelOutputSchemaIsStrictCompatible(t *testing.T) {
-	walkStrict(t, "root", ModelOutputSchema())
+	for _, shape := range []OutputShape{{}, {Patches: true}, {Checklists: true}, {Patches: true, Checklists: true}} {
+		walkStrict(t, fmt.Sprintf("root%+v", shape), ModelOutputSchema(shape))
+	}
 }
 
 func TestModelOutputSchemaOmitsServerFilledFields(t *testing.T) {
-	root := ModelOutputSchema()
+	root := ModelOutputSchema(OutputShape{})
 	props := root["properties"].(map[string]any)
 	for _, absent := range []string{"tool", "version", "input", "meta"} {
 		if _, ok := props[absent]; ok {
@@ -71,7 +74,7 @@ func TestModelOutputSchemaOmitsServerFilledFields(t *testing.T) {
 }
 
 func TestModelOutputSchemaEnumsMatchReviewTypes(t *testing.T) {
-	props := ModelOutputSchema()["properties"].(map[string]any)
+	props := ModelOutputSchema(OutputShape{})["properties"].(map[string]any)
 	issueProps := props["issues"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
 
 	cats := issueProps["category"].(map[string]any)["enum"].([]string)
@@ -97,7 +100,7 @@ func TestModelOutputSchemaEnumsMatchReviewTypes(t *testing.T) {
 }
 
 func TestModelOutputSchemaJSONRoundTrips(t *testing.T) {
-	raw := ModelOutputSchemaJSON()
+	raw := ModelOutputSchemaJSON(OutputShape{})
 	var back map[string]any
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatalf("schema JSON does not parse: %v", err)
@@ -105,8 +108,35 @@ func TestModelOutputSchemaJSONRoundTrips(t *testing.T) {
 	if !strings.Contains(string(raw), `"additionalProperties":false`) {
 		t.Error("serialized schema should carry additionalProperties:false")
 	}
-	if &raw[0] != &ModelOutputSchemaJSON()[0] {
-		t.Error("ModelOutputSchemaJSON should serialize once and reuse the result")
+}
+
+func TestModelOutputSchemaShapeGatesOptionalSections(t *testing.T) {
+	keys := func(shape OutputShape) map[string]bool {
+		root := ModelOutputSchema(shape)
+		out := map[string]bool{}
+		for k := range root["properties"].(map[string]any) {
+			out[k] = true
+		}
+		req := root["required"].([]string)
+		if len(req) != len(out) {
+			t.Errorf("shape %+v: required %v does not match properties %v", shape, req, out)
+		}
+		return out
+	}
+	if k := keys(OutputShape{}); k["patches"] || k["checklists"] {
+		t.Errorf("default shape must not request patches or checklists: %v", k)
+	}
+	if k := keys(OutputShape{Patches: true}); !k["patches"] || k["checklists"] {
+		t.Errorf("patches-only shape wrong: %v", k)
+	}
+	if k := keys(OutputShape{Checklists: true}); k["patches"] || !k["checklists"] {
+		t.Errorf("checklists-only shape wrong: %v", k)
+	}
+	if k := keys(OutputShape{Patches: true, Checklists: true}); !k["patches"] || !k["checklists"] {
+		t.Errorf("full shape wrong: %v", k)
+	}
+	if string(ModelOutputSchemaJSON(OutputShape{})) == string(ModelOutputSchemaJSON(OutputShape{Patches: true})) {
+		t.Error("serialized schemas must differ by shape")
 	}
 }
 

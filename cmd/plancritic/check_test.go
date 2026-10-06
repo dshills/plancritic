@@ -673,13 +673,15 @@ func TestEnvFloat(t *testing.T) {
 type callCountMockProvider struct {
 	responses []string
 	callIdx   int
-	prompts   []string // every prompt received, in order
+	prompts   []string       // every prompt received, in order
+	settings  []llm.Settings // settings for each call, in order
 }
 
 func (m *callCountMockProvider) Name() string { return "mock" }
 
-func (m *callCountMockProvider) Generate(_ context.Context, prompt string, _ llm.Settings) (string, llm.Usage, error) {
+func (m *callCountMockProvider) Generate(_ context.Context, prompt string, s llm.Settings) (string, llm.Usage, error) {
 	m.prompts = append(m.prompts, prompt)
+	m.settings = append(m.settings, s)
 	if m.callIdx >= len(m.responses) {
 		return "", llm.Usage{}, errors.New("no more mock responses")
 	}
@@ -1022,5 +1024,46 @@ func TestRunCheckFullRepairSendsAutoFixedOutput(t *testing.T) {
 	}
 	if !strings.Contains(mock.prompts[1], `"ISSUE-0002"`) {
 		t.Error("full repair should send the auto-fixed review, not the raw output")
+	}
+}
+
+// --- opt-in patches and checklists (output shape) ---
+
+func TestRunCheckPatchesAndChecklistsAreOptIn(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+
+	plain := &callCountMockProvider{responses: []string{validMockResponse()}}
+	f := cacheTestFlags(t, nil)
+	f.provider = plain
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	prompt, schema := plain.prompts[0], string(plain.settings[0].OutputSchema)
+	for _, absent := range []string{`"patches"`, `"checklists"`, `Include "patches"`} {
+		if strings.Contains(prompt, absent) {
+			t.Errorf("default prompt should not contain %s", absent)
+		}
+	}
+	if strings.Contains(schema, `"patches"`) || strings.Contains(schema, `"checklists"`) {
+		t.Error("default structured-output schema should not request patches or checklists")
+	}
+
+	shaped := &callCountMockProvider{responses: []string{validMockResponse()}}
+	f2 := cacheTestFlags(t, nil)
+	f2.provider = shaped
+	f2.patchOut = filepath.Join(t.TempDir(), "fixes.diff")
+	f2.checklists = true
+	planPath2 := writeTempPlan(t, "# Plan\n1. Step A")
+	if err := runCheck(context.Background(), planPath2, f2); err != nil {
+		t.Fatal(err)
+	}
+	prompt, schema = shaped.prompts[0], string(shaped.settings[0].OutputSchema)
+	for _, present := range []string{`"diff_unified"`, `Include "patches"`, `"checklists" as PASS`} {
+		if !strings.Contains(prompt, present) {
+			t.Errorf("shaped prompt should contain %s", present)
+		}
+	}
+	if !strings.Contains(schema, `"patches"`) || !strings.Contains(schema, `"checklists"`) {
+		t.Error("shaped structured-output schema should request patches and checklists")
 	}
 }

@@ -185,7 +185,7 @@ func TestBuildRepair(t *testing.T) {
 	errs := []schema.ValidationError{
 		{Path: "issues[0].severity", Message: "invalid: \"HIGH\""},
 	}
-	text := BuildRepair(`{"broken": true}`, errs)
+	text := BuildRepair(`{"broken": true}`, errs, schema.OutputShape{})
 	if !strings.Contains(text, "issues[0].severity") {
 		t.Error("repair prompt missing error path")
 	}
@@ -194,16 +194,57 @@ func TestBuildRepair(t *testing.T) {
 	}
 }
 
-func TestSchemaDefinitionOmitsServerFilledFields(t *testing.T) {
+func TestSchemaTextOmitsServerFilledFields(t *testing.T) {
+	full := SchemaText(schema.OutputShape{Patches: true, Checklists: true})
 	for _, absent := range []string{"plan_hash", `"score"`, "critical_count", `"tool"`, `"meta"`, `"quote"`} {
-		if strings.Contains(schemaDefinition, absent) {
+		if strings.Contains(full, absent) {
 			t.Errorf("prompt schema should not ask the model for %s", absent)
 		}
 	}
 	for _, present := range []string{`"verdict"`, `"issues"`, `"questions"`, `"patches"`, `"checklists"`, `"line_start"`} {
-		if !strings.Contains(schemaDefinition, present) {
+		if !strings.Contains(full, present) {
 			t.Errorf("prompt schema should mention %s", present)
 		}
+	}
+}
+
+func TestSchemaTextFollowsShape(t *testing.T) {
+	base := SchemaText(schema.OutputShape{})
+	if strings.Contains(base, `"patches"`) || strings.Contains(base, `"checklists"`) {
+		t.Error("default shape must not mention patches or checklists")
+	}
+	if !strings.HasSuffix(strings.TrimSpace(base), "}") {
+		t.Errorf("schema text should close its object:\n%s", base)
+	}
+	if p := SchemaText(schema.OutputShape{Patches: true}); !strings.Contains(p, `"diff_unified"`) || strings.Contains(p, `"checklists"`) {
+		t.Error("patches-only shape wrong")
+	}
+	if c := SchemaText(schema.OutputShape{Checklists: true}); strings.Contains(c, `"patches"`) || !strings.Contains(c, `"PASS"|"FAIL"|"N/A"`) {
+		t.Error("checklists-only shape wrong")
+	}
+}
+
+func TestBuildSegmentsShapeInstructions(t *testing.T) {
+	p := &plan.Plan{FilePath: "plan.md", Lines: []string{"step"}}
+	plain := Build(BuildOpts{Plan: p})
+	if strings.Contains(plain, `Include "patches"`) || strings.Contains(plain, `"checklists" as PASS`) {
+		t.Error("default prompt must not instruct the model to produce patches or checklists")
+	}
+	both := Build(BuildOpts{Plan: p, Shape: schema.OutputShape{Patches: true, Checklists: true}})
+	if !strings.Contains(both, `Include "patches"`) || !strings.Contains(both, `"checklists" as PASS`) {
+		t.Errorf("shaped prompt should instruct the model:\n%s", both)
+	}
+}
+
+func TestDeltaRepairFollowsShape(t *testing.T) {
+	opts := DeltaRepairOpts{Items: []RepairItem{{Kind: "issues", Index: 0, JSON: "{}"}}, PlanName: "p", PlanLines: 1}
+	plain := BuildDeltaRepair(opts)
+	if strings.Contains(plain, `"patches"`) || strings.Contains(plain, `"checklists"`) {
+		t.Errorf("default-shape delta repair must not mention patches or checklists:\n%s", plain)
+	}
+	opts.Shape = schema.OutputShape{Patches: true}
+	if shaped := BuildDeltaRepair(opts); !strings.Contains(shaped, `"patches" exactly 0`) {
+		t.Errorf("patches shape should carry the patches count:\n%s", shaped)
 	}
 }
 
@@ -223,7 +264,7 @@ func TestBuildDeltaRepair(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		`"issues" must contain exactly 1 corrected item(s), "questions" exactly 1, "patches" exactly 0`,
+		`"issues" must contain exactly 1 corrected item(s), "questions" exactly 1, in the order listed below`,
 		`plan "PLAN.md" lines 1-120; context "ARCH.md" lines 1-40; context "SPEC.md" lines 1-466`,
 		"- issues[3].evidence[0].line_end: exceeds plan line count (120)",
 		"### issues[3]",

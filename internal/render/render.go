@@ -79,6 +79,18 @@ func Markdown(r *review.Review) string {
 		}
 	}
 
+	// Checklists (only present when requested with --checklists)
+	if len(r.Checklists) > 0 {
+		b.WriteString("## Checklists\n\n")
+		for _, cl := range r.Checklists {
+			fmt.Fprintf(&b, "### %s\n\n", cl.Title)
+			for _, c := range cl.Checks {
+				fmt.Fprintf(&b, "- [%s] %s\n", c.Status, c.Check)
+			}
+			b.WriteString("\n")
+		}
+	}
+
 	// Context used
 	if len(r.Input.ContextFiles) > 0 {
 		b.WriteString("## Context Used\n\n")

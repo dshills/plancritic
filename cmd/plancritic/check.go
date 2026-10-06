@@ -36,6 +36,7 @@ type checkFlags struct {
 	hasSeed           bool
 	severityThreshold string
 	patchOut          string
+	checklists        bool
 	failOn            string
 	redactEnabled     bool
 	noCache           bool
@@ -76,7 +77,8 @@ func newCheckCmd() *cobra.Command {
 	flags.Float64Var(&f.temperature, "temperature", envFloat("PLANCRITIC_TEMPERATURE", 0.2), "Model temperature")
 	flags.IntVar(&f.seed, "seed", 0, "Random seed (if supported)")
 	flags.StringVar(&f.severityThreshold, "severity-threshold", envStr("PLANCRITIC_SEVERITY_THRESHOLD", "info"), "Minimum severity: info, warn, or critical")
-	flags.StringVar(&f.patchOut, "patch-out", "", "Write suggested patches as unified diff")
+	flags.StringVar(&f.patchOut, "patch-out", "", "Write suggested patches as unified diff (also asks the model to produce them)")
+	flags.BoolVar(&f.checklists, "checklists", envBool("PLANCRITIC_CHECKLISTS", false), "Ask the model to grade every profile checklist item (PASS/FAIL/N/A) and include the result")
 	flags.StringVar(&f.failOn, "fail-on", envStr("PLANCRITIC_FAIL_ON", ""), "Exit non-zero if verdict meets this level")
 	flags.BoolVar(&f.redactEnabled, "redact", envBool("PLANCRITIC_REDACT", true), "Redact secrets before sending to model")
 	flags.BoolVar(&f.noCache, "no-cache", envBool("PLANCRITIC_NO_CACHE", false), "Disable all caching: provider prompt caches and the local result cache")
@@ -163,6 +165,8 @@ func runReview(parentCtx context.Context, planPath string, f *checkFlags) (revie
 		RedactEnabled:     f.redactEnabled,
 		NoCache:           f.noCache,
 		NoResultCache:     f.noResultCache,
+		Patches:           f.patchOut != "",
+		Checklists:        f.checklists,
 		CacheTTL:          f.cacheTTL,
 		Verbose:           f.verbose,
 		Debug:             f.debug,

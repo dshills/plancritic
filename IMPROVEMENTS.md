@@ -107,6 +107,13 @@ schema from `schema/review.v1.json` minus the server-filled fields (item 4).
 
 ### 4. Stop asking the model for fields the runner overwrites; make patches and checklists opt-in  — Tokens, Speed, Accuracy
 
+**Status: done.** Server-filled fields left the model-facing schema in item 3. Patches
+and checklists are now governed by `schema.OutputShape`: the JSON Schema sent to the
+provider, the prompt's schema text, the tail instructions, and both repair prompts all
+omit them unless asked. Patches are requested only when `--patch-out` is given;
+checklists only with the new `--checklists` flag (`PLANCRITIC_CHECKLISTS`). The Markdown
+renderer now shows checklists when present, and the SDK facade exposes both switches.
+
 **Evidence:** `schemaDefinition` in the prompt asks the model to emit `tool`, `version`,
 `input.plan_hash` ("sha256:…", which it cannot know and therefore invents), `input.context_files`
 hashes, `summary.score`, severity counts, and `meta`. `reviewer.Run` discards all of them

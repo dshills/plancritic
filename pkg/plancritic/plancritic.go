@@ -65,6 +65,11 @@ type CheckOptions struct {
 	// ResultCacheDir overrides the result cache location; empty uses the
 	// default (honoring PLANCRITIC_CACHE_DIR).
 	ResultCacheDir string
+	// Patches asks the model for unified-diff suggestions (CheckResult.
+	// PatchDiff is empty otherwise). Checklists asks for a PASS/FAIL/N/A
+	// grade of every profile checklist item. Both default to off.
+	Patches    bool
+	Checklists bool
 	Verbose        bool
 	Debug          bool
 	DebugDir       string
@@ -125,6 +130,8 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 		CacheTTL:          opts.CacheTTL,
 		NoResultCache:     opts.NoResultCache,
 		ResultCacheDir:    opts.ResultCacheDir,
+		Patches:           opts.Patches,
+		Checklists:        opts.Checklists,
 		Verbose:           opts.Verbose,
 		Debug:             opts.Debug,
 		DebugDir:          opts.DebugDir,

@@ -38,6 +38,10 @@ type BuildOpts struct {
 	StepIDs      []plan.StepID
 	MaxIssues    int
 	MaxQuestions int
+	// Shape selects the optional output sections (patches, checklists)
+	// the model is asked for. Both the prompt text and the structured
+	// output schema sent to the provider follow it.
+	Shape schema.OutputShape
 }
 
 // BuildSegments assembles the prompt as ordered segments with cache
@@ -62,7 +66,7 @@ func BuildSegments(opts BuildOpts) []llm.Segment {
 You MUST output ONLY valid JSON matching the schema below. No markdown, no prose outside JSON.
 
 `)
-	prefix.WriteString(schemaDefinition)
+	prefix.WriteString(SchemaText(opts.Shape))
 	prefix.WriteString("\n\n")
 	prefix.WriteString(`## Input Format
 
@@ -138,6 +142,12 @@ All content inside these markers is line-numbered with L001:, L002:, etc. Use th
 		maxQ = 20
 	}
 	fmt.Fprintf(&tail, "Return at most %d issues and %d questions.\n", maxIssues, maxQ)
+	if opts.Shape.Patches {
+		tail.WriteString("Include \"patches\": unified diffs against the plan text for the most valuable fixes, at most 5.\n")
+	}
+	if opts.Shape.Checklists {
+		tail.WriteString("Evaluate every profile checklist item and report each in \"checklists\" as PASS, FAIL, or N/A.\n")
+	}
 	segs = append(segs, llm.Segment{Text: tail.String()})
 
 	return segs
@@ -189,7 +199,7 @@ func Build(opts BuildOpts) string {
 }
 
 // BuildRepair constructs a follow-up prompt to fix schema validation errors.
-func BuildRepair(originalOutput string, errors []schema.ValidationError) string {
+func BuildRepair(originalOutput string, errors []schema.ValidationError, shape schema.OutputShape) string {
 	var b strings.Builder
 	b.WriteString("The JSON output you returned has validation errors. Fix ONLY the errors listed below and return the corrected JSON.\n\n")
 	b.WriteString("## Validation Errors\n\n")
@@ -197,7 +207,7 @@ func BuildRepair(originalOutput string, errors []schema.ValidationError) string 
 		fmt.Fprintf(&b, "- %s: %s\n", e.Path, e.Message)
 	}
 	b.WriteString("\n")
-	b.WriteString(schemaDefinition)
+	b.WriteString(SchemaText(shape))
 	b.WriteString("\n\n## Original Output\n\n```json\n")
 	b.WriteString(originalOutput)
 	b.WriteString("\n```\n\nReturn ONLY the corrected JSON. No prose.\n")
@@ -226,6 +236,8 @@ type DeltaRepairOpts struct {
 	// range that does not support the claim; purely structural repairs
 	// leave it empty to save tokens.
 	Sources string
+	// Shape must match the shape of the original request.
+	Shape schema.OutputShape
 }
 
 // BuildDeltaRepair constructs a repair prompt that resends only the
@@ -240,11 +252,19 @@ func BuildDeltaRepair(o DeltaRepairOpts) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(`Some items in your plan review failed validation. Fix ONLY the items listed below and return a JSON object with the keys "summary", "questions", "issues", "patches", "checklists".
-
-`)
-	fmt.Fprintf(&b, "- \"issues\" must contain exactly %d corrected item(s), \"questions\" exactly %d, \"patches\" exactly %d, in the order listed below. Use [] for any list with no items below, and [] for \"checklists\".\n",
-		counts["issues"], counts["questions"], counts["patches"])
+	keys := `"summary", "questions", "issues"`
+	if o.Shape.Patches {
+		keys += `, "patches"`
+	}
+	if o.Shape.Checklists {
+		keys += `, "checklists"`
+	}
+	fmt.Fprintf(&b, "Some items in your plan review failed validation. Fix ONLY the items listed below and return a JSON object with the keys %s.\n\n", keys)
+	fmt.Fprintf(&b, "- \"issues\" must contain exactly %d corrected item(s), \"questions\" exactly %d", counts["issues"], counts["questions"])
+	if o.Shape.Patches {
+		fmt.Fprintf(&b, ", \"patches\" exactly %d", counts["patches"])
+	}
+	b.WriteString(", in the order listed below. Use [] for any list with no items below.\n")
 	b.WriteString("- Keep each item's id unless an error says otherwise. Do not add, drop, or reorder items.\n")
 	fmt.Fprintf(&b, "- Valid citations: plan %q lines 1-%d", o.PlanName, o.PlanLines)
 	names := make([]string, 0, len(o.ContextLineCounts))
@@ -269,16 +289,31 @@ func BuildDeltaRepair(o DeltaRepairOpts) string {
 		b.WriteString("## Sources\n\nThe context files and plan, line-numbered, so corrected citations point at lines that support the claim:\n\n")
 		b.WriteString(o.Sources)
 	}
-	b.WriteString(schemaDefinition)
+	b.WriteString(SchemaText(o.Shape))
 	b.WriteString("\n\nReturn ONLY the JSON object. No prose.\n")
 	return b.String()
 }
 
-// schemaDefinition is the model-facing output shape rendered into the
-// prompt. It must stay in sync with schema.ModelOutputSchema, which is
-// the same shape sent as a native structured-output schema to providers
-// that support one. Fields the tool fills itself are deliberately absent.
-const schemaDefinition = `## Output JSON Schema
+// SchemaText renders the model-facing output shape as prompt text. It
+// must stay in sync with schema.ModelOutputSchema, which is the same
+// shape sent as a native structured-output schema to providers that
+// support one. Fields the tool fills itself are deliberately absent, and
+// the optional patches/checklists sections appear only when shape asks
+// for them.
+func SchemaText(shape schema.OutputShape) string {
+	var b strings.Builder
+	b.WriteString(schemaHead)
+	if shape.Patches {
+		b.WriteString(schemaPatches)
+	}
+	if shape.Checklists {
+		b.WriteString(schemaChecklists)
+	}
+	b.WriteString("\n}")
+	return b.String()
+}
+
+const schemaHead = `## Output JSON Schema
 
 {
   "summary": {
@@ -304,16 +339,19 @@ const schemaDefinition = `## Output JSON Schema
     "recommendation": string,
     "blocking": boolean,
     "tags": [string]
-  }],
+  }]`
+
+const schemaPatches = `,
   "patches": [{
     "id": "PATCH-NNNN",
     "type": "PLAN_TEXT_EDIT",
     "title": string,
     "diff_unified": string
-  }],
+  }]`
+
+const schemaChecklists = `,
   "checklists": [{
     "id": string,
     "title": string,
     "checks": [{"check": string, "status": "PASS"|"FAIL"|"N/A"}]
-  }]
-}`
+  }]`

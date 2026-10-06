@@ -58,8 +58,11 @@ plancritic check plan.md --strict
 # Write output to file
 plancritic check plan.md --out review.json
 
-# Generate patch suggestions (unified diff)
+# Generate patch suggestions (unified diff); patches are only produced when asked for
 plancritic check plan.md --patch-out fixes.diff
+
+# Also grade the profile's checklist items
+plancritic check plan.md --profile go-backend --checklists
 
 # CI mode: exit non-zero if verdict is not executable
 plancritic check plan.md --fail-on not_executable
@@ -114,7 +117,8 @@ Common overrides:
 | `--temperature <float>` | 0.2 | LLM temperature |
 | `--seed <int>` | — | Seed for reproducibility (if supported) |
 | `--severity-threshold` | `info` | Minimum severity included in output |
-| `--patch-out <path>` | — | Write suggested plan edits as unified diff |
+| `--patch-out <path>` | — | Ask the model for plan edits and write them as a unified diff |
+| `--checklists` | false | Ask the model to grade every profile checklist item (PASS/FAIL/N/A) |
 | `--fail-on <level>` | — | Exit code 2 if verdict meets/exceeds this level |
 | `--redact` | true | Redact secrets before sending to model |
 | `--no-cache` | false | Disable all caching: provider prompt caches and the local result cache |

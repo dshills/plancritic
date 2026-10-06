@@ -1,9 +1,6 @@
 package schema
 
-import (
-	"encoding/json"
-	"sync"
-)
+import "encoding/json"
 
 // ModelOutputSchema is the JSON Schema the model's response must satisfy.
 // It is the model-facing subset of schema/review.v1.json: fields the
@@ -19,7 +16,16 @@ import (
 // expressed here (evidence line ranges within file bounds, context
 // paths that were actually provided, unique IDs, at least one evidence
 // entry) remain in Validate.
-func ModelOutputSchema() map[string]any {
+// OutputShape selects the optional sections the model is asked to
+// produce. Patches (unified diffs) and checklists are the most expensive
+// and least often consumed parts of a review, so they are requested only
+// when a caller will actually use them.
+type OutputShape struct {
+	Patches    bool
+	Checklists bool
+}
+
+func ModelOutputSchema(shape OutputShape) map[string]any {
 	evidence := obj(map[string]any{
 		"source":     enum([]string{"plan", "context"}, "Which input the citation refers to"),
 		"path":       str("File name as shown in the input markers"),
@@ -78,28 +84,32 @@ func ModelOutputSchema() map[string]any {
 		"verdict": enum([]string{"EXECUTABLE_AS_IS", "EXECUTABLE_WITH_CLARIFICATIONS", "NOT_EXECUTABLE"}, ""),
 	}, []string{"verdict"})
 
-	return obj(map[string]any{
-		"summary":    summary,
-		"questions":  arr(question),
-		"issues":     arr(issue),
-		"patches":    arr(patch),
-		"checklists": arr(checklist),
-	}, []string{"summary", "questions", "issues", "patches", "checklists"})
+	props := map[string]any{
+		"summary":   summary,
+		"questions": arr(question),
+		"issues":    arr(issue),
+	}
+	required := []string{"summary", "questions", "issues"}
+	if shape.Patches {
+		props["patches"] = arr(patch)
+		required = append(required, "patches")
+	}
+	if shape.Checklists {
+		props["checklists"] = arr(checklist)
+		required = append(required, "checklists")
+	}
+	return obj(props, required)
 }
 
-var modelOutputSchemaJSON = sync.OnceValue(func() json.RawMessage {
-	data, err := json.Marshal(ModelOutputSchema())
+// ModelOutputSchemaJSON returns ModelOutputSchema serialized for
+// embedding in provider requests.
+func ModelOutputSchemaJSON(shape OutputShape) json.RawMessage {
+	data, err := json.Marshal(ModelOutputSchema(shape))
 	if err != nil {
 		// The schema is a static literal; a marshal failure is a bug.
 		panic("schema: marshal model output schema: " + err.Error())
 	}
 	return data
-})
-
-// ModelOutputSchemaJSON returns ModelOutputSchema serialized once for
-// embedding in provider requests.
-func ModelOutputSchemaJSON() json.RawMessage {
-	return modelOutputSchemaJSON()
 }
 
 func obj(props map[string]any, required []string) map[string]any {

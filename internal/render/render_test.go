@@ -104,3 +104,25 @@ func TestMarkdownEmpty(t *testing.T) {
 		t.Error("expected 'No issues found' for empty review")
 	}
 }
+
+func TestMarkdownRendersChecklists(t *testing.T) {
+	r := &review.Review{
+		Checklists: []review.Checklist{{
+			ID:    "TESTING",
+			Title: "Test coverage",
+			Checks: []review.CheckItem{
+				{Check: "Does the plan specify tests?", Status: review.CheckStatus("PASS")},
+				{Check: "Are tests mapped to criteria?", Status: review.CheckStatus("FAIL")},
+			},
+		}},
+	}
+	out := Markdown(r)
+	for _, want := range []string{"## Checklists", "### Test coverage", "- [PASS] Does the plan specify tests?", "- [FAIL] Are tests mapped to criteria?"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("markdown missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(Markdown(&review.Review{}), "## Checklists") {
+		t.Error("empty review should not render a Checklists section")
+	}
+}

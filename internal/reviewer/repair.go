@@ -21,6 +21,8 @@ type repairBounds struct {
 	// Sources is the line-numbered plan and context text, attached to a
 	// delta repair only when an error concerns evidence.
 	Sources string
+	// Shape of the original request; repairs must ask for the same keys.
+	Shape schema.OutputShape
 }
 
 // repairReview asks the model to fix validation errors in rev. When every
@@ -53,6 +55,7 @@ func repairReview(
 			PlanName:          bounds.PlanName,
 			PlanLines:         bounds.PlanLines,
 			ContextLineCounts: bounds.ContextLineCounts,
+			Shape:             bounds.Shape,
 		}
 		if needsSources(errs) {
 			opts.Sources = bounds.Sources
@@ -66,7 +69,7 @@ func repairReview(
 		if err != nil {
 			return review.Review{}, Errorf(5, "prepare full repair: %v", err)
 		}
-		promptText = prompt.BuildRepair(string(current), errs)
+		promptText = prompt.BuildRepair(string(current), errs, bounds.Shape)
 	}
 
 	out, usage, err := provider.Generate(ctx, promptText, settings)
