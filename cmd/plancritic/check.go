@@ -28,6 +28,8 @@ type checkFlags struct {
 	strict            bool
 	providerName      string
 	model             string
+	effort            string
+	fast              bool
 	maxTokens         int
 	maxIssues         int
 	maxQuestions      int
@@ -73,7 +75,9 @@ func newCheckCmd() *cobra.Command {
 	flags.StringVar(&f.profileName, "profile", envStr("PLANCRITIC_PROFILE", "general"), "Profile name")
 	flags.BoolVar(&f.strict, "strict", envBool("PLANCRITIC_STRICT", false), "Enable strict grounding mode")
 	flags.StringVar(&f.providerName, "provider", envStr("PLANCRITIC_PROVIDER", ""), "LLM provider: anthropic, openai, or gemini")
-	flags.StringVar(&f.model, "model", envStr("PLANCRITIC_MODEL", ""), "Model ID (e.g., claude-sonnet-4-6, gpt-5.2)")
+	flags.StringVar(&f.model, "model", envStr("PLANCRITIC_MODEL", ""), "Model ID (e.g., claude-opus-5-5, gpt-5.2, gemini-2.5-flash)")
+	flags.StringVar(&f.effort, "effort", envStr("PLANCRITIC_EFFORT", ""), "Reasoning effort: low, medium, high, xhigh, or max (default: the model's own)")
+	flags.BoolVar(&f.fast, "fast", envBool("PLANCRITIC_FAST", false), "Use the provider's cheaper, faster model tier (ignored when --model is set)")
 	flags.IntVar(&f.maxTokens, "max-tokens", envInt("PLANCRITIC_MAX_TOKENS", 16384), "Max response tokens (a truncated response is salvaged and flagged rather than failed)")
 	flags.IntVar(&f.maxIssues, "max-issues", envInt("PLANCRITIC_MAX_ISSUES", 50), "Max issues to return")
 	flags.IntVar(&f.maxQuestions, "max-questions", envInt("PLANCRITIC_MAX_QUESTIONS", 20), "Max questions to return")
@@ -171,6 +175,8 @@ func runReview(parentCtx context.Context, planPath string, f *checkFlags) (revie
 		Strict:            f.strict,
 		ProviderName:      f.providerName,
 		Model:             f.model,
+		Effort:            f.effort,
+		Fast:              f.fast,
 		MaxTokens:         f.maxTokens,
 		MaxIssues:         f.maxIssues,
 		MaxQuestions:      f.maxQuestions,

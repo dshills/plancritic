@@ -37,16 +37,20 @@ type ContextDocument struct {
 }
 
 type CheckOptions struct {
-	Version           string
-	PlanPath          string
-	PlanName          string
-	PlanText          string
-	ContextPaths      []string
-	ContextDocuments  []ContextDocument
-	ProfileName       string
-	Strict            bool
-	ProviderName      string
-	Model             string
+	Version          string
+	PlanPath         string
+	PlanName         string
+	PlanText         string
+	ContextPaths     []string
+	ContextDocuments []ContextDocument
+	ProfileName      string
+	Strict           bool
+	ProviderName     string
+	Model            string
+	// Effort is the reasoning effort (low, medium, high, xhigh, max);
+	// Fast selects the provider's cheaper tier when Model is empty.
+	Effort            string
+	Fast              bool
 	MaxTokens         int
 	MaxIssues         int
 	MaxQuestions      int
@@ -118,6 +122,8 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 		Strict:            opts.Strict,
 		ProviderName:      opts.ProviderName,
 		Model:             opts.Model,
+		Effort:            opts.Effort,
+		Fast:              opts.Fast,
 		MaxTokens:         opts.MaxTokens,
 		MaxIssues:         opts.MaxIssues,
 		MaxQuestions:      opts.MaxQuestions,
@@ -241,7 +247,7 @@ func DefaultModelForProvider(provider string) string {
 	case "gemini", "google":
 		return "gemini-2.5-flash"
 	default:
-		return "claude-sonnet-4-6"
+		return "claude-opus-5-5"
 	}
 }
 

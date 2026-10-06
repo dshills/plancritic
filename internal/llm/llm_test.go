@@ -1501,3 +1501,207 @@ func TestProvidersReturnTypedTruncationError(t *testing.T) {
 		}
 	})
 }
+
+// --- effort, fast tier, thinking ---
+
+func TestValidEffortAndFastModel(t *testing.T) {
+	for _, e := range append([]string{""}, ValidEfforts...) {
+		if !ValidEffort(e) {
+			t.Errorf("%q should be valid", e)
+		}
+	}
+	for _, e := range []string{"LOW", "ultra", "1"} {
+		if ValidEffort(e) {
+			t.Errorf("%q should be invalid", e)
+		}
+	}
+	if FastModel("anthropic") == "" || FastModel("openai") == "" || FastModel("gemini") == "" || FastModel("mock") != "" {
+		t.Error("fast tier should be defined for the three providers only")
+	}
+}
+
+func TestAnthropicEffortAndThinking(t *testing.T) {
+	capture := func(model, effort string, schema json.RawMessage) map[string]any {
+		var captured map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&captured)
+			_ = json.NewEncoder(w).Encode(anthropicResponse{Content: []anthropicContentBlock{{Type: "text", Text: "{}"}}, StopReason: "end_turn"})
+		}))
+		defer srv.Close()
+		p := &AnthropicProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+		if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: model, Effort: effort, OutputSchema: schema}); err != nil {
+			t.Fatal(err)
+		}
+		return captured
+	}
+
+	req := capture("claude-opus-5-5", "low", json.RawMessage(testSchema))
+	oc := req["output_config"].(map[string]any)
+	if oc["effort"] != "low" || oc["format"] == nil {
+		t.Errorf("effort should sit beside the format in output_config: %v", oc)
+	}
+	if req["thinking"] != nil {
+		t.Error("5.x models think by default; no thinking block should be sent")
+	}
+
+	req = capture("claude-sonnet-4-6", "high", nil)
+	if oc := req["output_config"].(map[string]any); oc["effort"] != "high" || oc["format"] != nil {
+		t.Errorf("effort without a schema should produce output_config with effort only: %v", oc)
+	}
+	if th, _ := req["thinking"].(map[string]any); th["type"] != "adaptive" {
+		t.Errorf("4.6 models need adaptive thinking turned on for effort to apply: %v", req["thinking"])
+	}
+
+	req = capture("claude-opus-5-5", "", nil)
+	if req["output_config"] != nil || req["thinking"] != nil {
+		t.Error("no effort and no schema: neither output_config nor thinking should be sent")
+	}
+}
+
+func TestAnthropicDropsOnlyEffortWhenRejected(t *testing.T) {
+	noSleep(t)
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		if oc, _ := b["output_config"].(map[string]any); oc["effort"] != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"output_config.effort: not supported on this model"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(anthropicResponse{Content: []anthropicContentBlock{{Type: "text", Text: "{}"}}, StopReason: "end_turn"})
+	}))
+	defer srv.Close()
+	p := &AnthropicProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "claude-opus-5-5", Effort: "max", OutputSchema: json.RawMessage(testSchema)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected one retry, got %d requests", len(bodies))
+	}
+	oc := bodies[1]["output_config"].(map[string]any)
+	if oc["effort"] != nil || oc["format"] == nil {
+		t.Errorf("retry should drop effort but keep the schema: %v", oc)
+	}
+}
+
+func TestOpenAIReasoningEffortAndTemperatureFallback(t *testing.T) {
+	noSleep(t)
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		if b["temperature"] != nil && strings.HasPrefix(b["model"].(string), "gpt-5") {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported.","type":"invalid_request_error"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(openaiResponse{Choices: []openaiChoice{{Message: openaiMessage{Content: "{}"}, FinishReason: "stop"}}})
+	}))
+	defer srv.Close()
+	p := &OpenAIProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "gpt-5.2", Effort: "xhigh", Temperature: 0.2}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || bodies[1]["temperature"] != nil {
+		t.Errorf("a rejected temperature should be dropped on retry: %d requests, second=%v", len(bodies), bodies[len(bodies)-1])
+	}
+	if bodies[0]["reasoning_effort"] != "xhigh" || bodies[1]["reasoning_effort"] != "xhigh" {
+		t.Errorf("xhigh should pass through and survive the temperature retry: %v", bodies)
+	}
+
+	bodies = nil
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "gpt-4o", Effort: "low", Temperature: 0.2}); err != nil {
+		t.Fatal(err)
+	}
+	if bodies[0]["reasoning_effort"] != nil {
+		t.Error("non-reasoning models must not be sent reasoning_effort")
+	}
+}
+
+func TestOpenAIReasoningEffortStepsDownThenDrops(t *testing.T) {
+	noSleep(t)
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		if b["reasoning_effort"] != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Unsupported value for reasoning_effort"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(openaiResponse{Choices: []openaiChoice{{Message: openaiMessage{Content: "{}"}, FinishReason: "stop"}}})
+	}))
+	defer srv.Close()
+	p := &OpenAIProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "o3", Effort: "max"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 3 || bodies[0]["reasoning_effort"] != "xhigh" || bodies[1]["reasoning_effort"] != "high" || bodies[2]["reasoning_effort"] != nil {
+		t.Errorf("max -> xhigh should step down to high, then drop: %v", bodies)
+	}
+
+	bodies = nil
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "o3", Effort: "medium"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || bodies[1]["reasoning_effort"] != nil {
+		t.Errorf("a rejected non-xhigh effort should be dropped directly: %v", bodies)
+	}
+}
+
+func TestGeminiThinkingLevel(t *testing.T) {
+	noSleep(t)
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		gc := b["generationConfig"].(map[string]any)
+		if tc, _ := gc["thinkingConfig"].(map[string]any); tc["thinkingLevel"] == "high" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Invalid value at 'generation_config.thinking_config.thinking_level'","status":"INVALID_ARGUMENT"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(geminiResponse{Candidates: []geminiCandidate{{Content: geminiContent{Parts: []geminiPart{{Text: "{}"}}}, FinishReason: "STOP"}}})
+	}))
+	defer srv.Close()
+	p := &GeminiProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "gemini-3-flash-preview", Effort: "medium"}); err != nil {
+		t.Fatal(err)
+	}
+	gc := bodies[0]["generationConfig"].(map[string]any)
+	if tc, _ := gc["thinkingConfig"].(map[string]any); tc["thinkingLevel"] != "medium" || tc["thinkingBudget"] != nil {
+		t.Errorf("Gemini 3: effort medium should become thinkingLevel medium: %v", gc)
+	}
+
+	bodies = nil
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: FastModel("gemini"), Effort: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	gc = bodies[0]["generationConfig"].(map[string]any)
+	if tc, _ := gc["thinkingConfig"].(map[string]any); tc["thinkingBudget"] != float64(1024) || tc["thinkingLevel"] != nil {
+		t.Errorf("Gemini 2.5 (the fast tier): effort low should become thinkingBudget 1024: %v", gc)
+	}
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "models/gemini-2.5-pro", Effort: "max"}); err != nil {
+		t.Fatal(err)
+	}
+	gc = bodies[len(bodies)-1]["generationConfig"].(map[string]any)
+	if tc, _ := gc["thinkingConfig"].(map[string]any); tc["thinkingBudget"] != float64(24576) {
+		t.Errorf("Gemini 2.5: effort max should become the top budget: %v", gc)
+	}
+
+	bodies = nil
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "gemini-3-flash-preview", Effort: "max"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || bodies[1]["generationConfig"].(map[string]any)["thinkingConfig"] != nil {
+		t.Errorf("a rejected thinking level should be dropped on retry: %v", bodies)
+	}
+}

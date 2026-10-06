@@ -28,6 +28,41 @@ type Settings struct {
 	// OnRetry, when set, is called before each retry of a transient
 	// provider failure so callers can log it.
 	OnRetry RetryNotify
+	// Effort, when set, asks the model to reason less or more before
+	// answering: one of low, medium, high, xhigh, max (the Anthropic
+	// vocabulary; other providers map it onto their own control).
+	// Empty leaves the provider's default.
+	Effort string
+}
+
+// ValidEfforts lists the accepted --effort values, least to most.
+var ValidEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// ValidEffort reports whether e is empty or one of ValidEfforts.
+func ValidEffort(e string) bool {
+	if e == "" {
+		return true
+	}
+	for _, v := range ValidEfforts {
+		if v == e {
+			return true
+		}
+	}
+	return false
+}
+
+// FastModel returns the cheaper, faster model tier for a provider, used
+// by --fast when no --model is given. Empty for unknown providers.
+func FastModel(provider string) string {
+	switch strings.ToLower(provider) {
+	case "anthropic":
+		return "claude-sonnet-5-5"
+	case "openai":
+		return "gpt-5-mini"
+	case "gemini", "google":
+		return "gemini-2.5-flash-lite"
+	}
+	return ""
 }
 
 // Usage reports token counts for a single request. Cache-related fields

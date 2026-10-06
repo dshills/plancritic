@@ -13,7 +13,7 @@ import (
 
 const (
 	anthropicAPIURL       = "https://api.anthropic.com/v1/messages"
-	anthropicDefaultModel = "claude-sonnet-4-6"
+	anthropicDefaultModel = "claude-opus-5-5"
 	anthropicAPIVersion   = "2023-06-01"
 )
 
@@ -85,6 +85,19 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 			Format: &anthropicOutputFormat{Type: "json_schema", Schema: s.OutputSchema},
 		}
 	}
+	if s.Effort != "" {
+		if reqBody.OutputConfig == nil {
+			reqBody.OutputConfig = &anthropicOutputConfig{}
+		}
+		reqBody.OutputConfig.Effort = s.Effort
+		// Effort controls thinking depth; on families where thinking is
+		// off unless requested, turn adaptive thinking on so effort has
+		// something to govern. Current-generation models already run
+		// adaptive thinking by default.
+		if anthropicThinkingOffByDefault(model) {
+			reqBody.Thinking = &anthropicThinking{Type: "adaptive"}
+		}
+	}
 
 	var respBody []byte
 	for attempt := 0; ; attempt++ {
@@ -103,9 +116,18 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 		// retried without that feature, so a stale capability list
 		// degrades to prompt-only JSON (or default sampling) instead of
 		// failing the run. At most one retry per feature.
-		if status == http.StatusBadRequest && attempt < 2 {
+		if status == http.StatusBadRequest && attempt < 4 {
 			msg := strings.ToLower(string(data))
 			switch {
+			case reqBody.OutputConfig != nil && reqBody.OutputConfig.Effort != "" && strings.Contains(msg, "effort"):
+				reqBody.OutputConfig.Effort = ""
+				if reqBody.OutputConfig.Format == nil {
+					reqBody.OutputConfig = nil
+				}
+				continue
+			case reqBody.Thinking != nil && strings.Contains(msg, "thinking"):
+				reqBody.Thinking = nil
+				continue
 			case reqBody.OutputConfig != nil && strings.Contains(msg, "output_config"):
 				reqBody.OutputConfig = nil
 				continue
@@ -181,10 +203,33 @@ type anthropicRequest struct {
 	Temperature  *float64               `json:"temperature,omitempty"`
 	Messages     []anthropicMessage     `json:"messages"`
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+	Thinking     *anthropicThinking     `json:"thinking,omitempty"`
 }
 
 type anthropicOutputConfig struct {
 	Format *anthropicOutputFormat `json:"format,omitempty"`
+	Effort string                 `json:"effort,omitempty"`
+}
+
+type anthropicThinking struct {
+	Type string `json:"type"`
+}
+
+// thinkingOffByDefaultPrefixes lists families that run without thinking
+// unless it is requested explicitly. From the 5.x generation on,
+// thinking is on by default.
+var thinkingOffByDefaultPrefixes = []string{
+	"claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6",
+}
+
+func anthropicThinkingOffByDefault(model string) bool {
+	m := strings.ToLower(model)
+	for _, p := range thinkingOffByDefaultPrefixes {
+		if strings.HasPrefix(m, p) {
+			return true
+		}
+	}
+	return false
 }
 
 type anthropicOutputFormat struct {

@@ -94,7 +94,7 @@ func newServeCmd() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&f.addr, "addr", f.addr, "HTTP listen address")
 	flags.StringVar(&f.ProviderName, "provider", f.ProviderName, "LLM provider: anthropic, openai, or gemini")
-	flags.StringVar(&f.Model, "model", f.Model, "Model ID (e.g., claude-sonnet-4-6, gpt-5.2)")
+	flags.StringVar(&f.Model, "model", f.Model, "Model ID (e.g., claude-opus-5-5, gpt-5.2)")
 	flags.StringVar(&f.ProfileName, "profile", f.ProfileName, "Default profile name")
 	flags.StringVar(&f.SeverityThreshold, "severity-threshold", f.SeverityThreshold, "Default minimum severity: info, warn, or critical")
 	flags.BoolVar(&f.Strict, "strict", f.Strict, "Enable strict grounding mode by default")

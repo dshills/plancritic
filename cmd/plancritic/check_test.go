@@ -1397,3 +1397,81 @@ func TestRunCheckPromptCarriesSeverityThreshold(t *testing.T) {
 		t.Error("prompt should tell the model the severity threshold")
 	}
 }
+
+// --- --effort and --fast ---
+
+// namedProvider gives a mock a real provider name so provider-keyed
+// behavior (fast tier) can be exercised.
+type namedProvider struct {
+	*callCountMockProvider
+	name string
+}
+
+func (n *namedProvider) Name() string { return n.name }
+
+func TestRunCheckInvalidEffortFailsBeforeProviderCall(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+	f := cacheTestFlags(t, mock)
+	f.effort = "ultra"
+	err := runCheck(context.Background(), planPath, f)
+	assertExitCode(t, err, 3)
+	if mock.Calls != 0 || !strings.Contains(err.Error(), "xhigh") {
+		t.Errorf("invalid effort should fail before any call and list valid values: calls=%d err=%v", mock.Calls, err)
+	}
+}
+
+func TestRunCheckEffortReachesProviderAndCacheKey(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	mock := &callCountMockProvider{responses: []string{validMockResponse(), validMockResponse()}}
+
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.effort = "low"
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if mock.settings[0].Effort != "low" {
+		t.Errorf("effort should reach the provider settings, got %q", mock.settings[0].Effort)
+	}
+
+	g := cacheTestFlags(t, nil)
+	g.provider = mock
+	g.effort = "high"
+	if err := runCheck(context.Background(), planPath, g); err != nil {
+		t.Fatal(err)
+	}
+	if mock.callIdx != 2 {
+		t.Errorf("a different effort is a different review and must miss the cache, calls=%d", mock.callIdx)
+	}
+}
+
+func TestRunCheckFastTier(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	inner := &callCountMockProvider{responses: []string{validMockResponse(), validMockResponse()}}
+	mock := &namedProvider{callCountMockProvider: inner, name: "anthropic"}
+
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.fast = true
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if got := inner.settings[0].Model; got != llm.FastModel("anthropic") {
+		t.Errorf("--fast should request the fast tier model, got %q", got)
+	}
+	if rev := readReview(t, f.out); rev.Meta.Model != "anthropic/"+llm.FastModel("anthropic") {
+		t.Errorf("meta.model should name the fast tier, got %q", rev.Meta.Model)
+	}
+
+	g := cacheTestFlags(t, nil)
+	g.provider = mock
+	g.fast = true
+	g.model = "claude-opus-5-5"
+	if err := runCheck(context.Background(), planPath, g); err != nil {
+		t.Fatal(err)
+	}
+	if got := inner.settings[1].Model; got != "claude-opus-5-5" {
+		t.Errorf("an explicit --model must win over --fast, got %q", got)
+	}
+}

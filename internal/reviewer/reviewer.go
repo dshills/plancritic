@@ -61,6 +61,11 @@ type Options struct {
 	// BaselinePath, when set, is an earlier run's JSON output; the
 	// result then carries a Delta of resolved/new/persisting findings.
 	BaselinePath string
+	// Effort asks the model to reason less or more (see llm.Settings).
+	Effort string
+	// Fast selects the provider's cheaper, faster model tier when no
+	// Model is given (see llm.FastModel).
+	Fast bool
 	// ResultCacheDir overrides where cached reviews are stored. Empty
 	// selects resultcache.DefaultDir, which honors PLANCRITIC_CACHE_DIR.
 	ResultCacheDir string
@@ -135,6 +140,19 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		}
 	}
 	verbose("Using provider: %s", modelProvider.Name())
+
+	if !llm.ValidEffort(f.Effort) {
+		return review.Review{}, Errorf(3, "invalid --effort %q (valid: %s)", f.Effort, strings.Join(llm.ValidEfforts, ", "))
+	}
+	// requestModel is what the provider is asked for: the explicit
+	// --model, else the fast tier when --fast is set, else empty for the
+	// provider's default.
+	requestModel := f.Model
+	if requestModel == "" && f.Fast {
+		if requestModel = llm.FastModel(modelProvider.Name()); requestModel != "" {
+			verbose("Fast tier: using %s", requestModel)
+		}
+	}
 
 	// 6b. Parse timeout
 	requestTimeoutText := f.Timeout
@@ -227,7 +245,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 				Hash: cf.Hash,
 			})
 		}
-		modelName := f.Model
+		modelName := llm.EffectiveModel(modelProvider, requestModel)
 		if modelName == "" {
 			modelName = "(default)"
 		}
@@ -274,7 +292,8 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 				"v1",
 				version,
 				modelProvider.Name(),
-				llm.EffectiveModel(modelProvider, f.Model),
+				llm.EffectiveModel(modelProvider, requestModel),
+				f.Effort,
 				strconv.FormatFloat(f.Temperature, 'g', -1, 64),
 				seedKey,
 				strconv.Itoa(f.MaxTokens),
@@ -291,7 +310,8 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	// 9. Call LLM
 	verbose("Calling LLM (timeout: %s)...", timeout)
 	settings := llm.Settings{
-		Model:       f.Model,
+		Model:       requestModel,
+		Effort:      f.Effort,
 		Temperature: f.Temperature,
 		MaxTokens:   f.MaxTokens,
 		// Providers with native structured output enforce the shape at
@@ -310,7 +330,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	defer cancel()
 
 	if !f.NoCache {
-		if name, err := ensureGeminiCache(ctx, modelProvider, promptSegments, f.Model, f.CacheTTL, verbose); err != nil {
+		if name, err := ensureGeminiCache(ctx, modelProvider, promptSegments, requestModel, f.CacheTTL, verbose); err != nil {
 			verbose("Cache orchestration error (falling back to uncached): %v", err)
 		} else if name != "" {
 			settings.CachedContentName = name

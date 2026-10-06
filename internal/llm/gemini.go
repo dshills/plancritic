@@ -105,6 +105,9 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 	if len(s.OutputSchema) > 0 {
 		reqBody.GenerationConfig.ResponseJSONSchema = s.OutputSchema
 	}
+	if s.Effort != "" {
+		reqBody.GenerationConfig.ThinkingConfig = geminiThinking(model, s.Effort)
+	}
 	if s.CachedContentName != "" {
 		reqBody.CachedContent = s.CachedContentName
 	}
@@ -124,10 +127,15 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 		}
 		// A model that rejects responseJsonSchema is retried once with
 		// plain JSON mode so a schema-less model cannot fail the run.
-		if status == http.StatusBadRequest && attempt == 0 && reqBody.GenerationConfig.ResponseJSONSchema != nil {
+		if status == http.StatusBadRequest && attempt < 2 {
 			msg := strings.ToLower(string(data))
-			if strings.Contains(msg, "response_json_schema") || strings.Contains(msg, "responsejsonschema") {
+			switch {
+			case reqBody.GenerationConfig.ResponseJSONSchema != nil &&
+				(strings.Contains(msg, "response_json_schema") || strings.Contains(msg, "responsejsonschema")):
 				reqBody.GenerationConfig.ResponseJSONSchema = nil
+				continue
+			case reqBody.GenerationConfig.ThinkingConfig != nil && strings.Contains(msg, "thinking"):
+				reqBody.GenerationConfig.ThinkingConfig = nil
 				continue
 			}
 		}
@@ -305,11 +313,44 @@ type geminiPart struct {
 }
 
 type geminiGenerationConfig struct {
-	Temperature        float64         `json:"temperature"`
-	MaxOutputTokens    int             `json:"maxOutputTokens"`
-	ResponseMIMEType   string          `json:"responseMimeType,omitempty"`
-	ResponseJSONSchema json.RawMessage `json:"responseJsonSchema,omitempty"`
-	Seed               *int            `json:"seed,omitempty"`
+	Temperature        float64               `json:"temperature"`
+	MaxOutputTokens    int                   `json:"maxOutputTokens"`
+	ResponseMIMEType   string                `json:"responseMimeType,omitempty"`
+	ResponseJSONSchema json.RawMessage       `json:"responseJsonSchema,omitempty"`
+	Seed               *int                  `json:"seed,omitempty"`
+	ThinkingConfig     *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type geminiThinkingConfig struct {
+	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
+	ThinkingBudget *int   `json:"thinkingBudget,omitempty"`
+}
+
+// geminiThinking maps the shared effort vocabulary onto the thinking
+// control the model family understands: Gemini 2.5 models take a token
+// budget (thinkingBudget), Gemini 3 and later take a level
+// (thinkingLevel, which tops out at "high").
+func geminiThinking(model, effort string) *geminiThinkingConfig {
+	if strings.HasPrefix(strings.ToLower(strings.TrimPrefix(model, "models/")), "gemini-2.5") {
+		var budget int
+		switch effort {
+		case "low":
+			budget = 1024
+		case "medium":
+			budget = 8192
+		case "high":
+			budget = 16384
+		default: // xhigh, max
+			budget = 24576
+		}
+		return &geminiThinkingConfig{ThinkingBudget: &budget}
+	}
+	level := effort
+	switch effort {
+	case "xhigh", "max":
+		level = "high"
+	}
+	return &geminiThinkingConfig{ThinkingLevel: level}
 }
 
 type geminiResponse struct {

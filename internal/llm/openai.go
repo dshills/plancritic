@@ -48,14 +48,18 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 		maxTokens = 16384
 	}
 
+	temperature := s.Temperature
 	reqBody := openaiRequest{
 		Model:               model,
 		MaxCompletionTokens: maxTokens,
-		Temperature:         s.Temperature,
+		Temperature:         &temperature,
 		Messages: []openaiMessage{
 			{Role: "user", Content: prompt},
 		},
 		ResponseFormat: &openaiResponseFormat{Type: "json_object"},
+	}
+	if s.Effort != "" && openaiReasoningModel(model) {
+		reqBody.ReasoningEffort = openaiEffort(s.Effort)
 	}
 	if len(s.OutputSchema) > 0 && openaiSupportsStructuredOutput(model) {
 		reqBody.ResponseFormat = &openaiResponseFormat{
@@ -82,11 +86,23 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 		}
 		// A model that rejects json_schema is retried once in plain JSON
 		// mode so a stale capability list cannot fail the run.
-		if status == http.StatusBadRequest && attempt == 0 &&
-			reqBody.ResponseFormat != nil && reqBody.ResponseFormat.Type == "json_schema" {
+		if status == http.StatusBadRequest && attempt < 4 {
 			msg := strings.ToLower(string(data))
-			if strings.Contains(msg, "response_format") || strings.Contains(msg, "json_schema") {
+			switch {
+			case reqBody.ResponseFormat != nil && reqBody.ResponseFormat.Type == "json_schema" &&
+				(strings.Contains(msg, "response_format") || strings.Contains(msg, "json_schema")):
 				reqBody.ResponseFormat = &openaiResponseFormat{Type: "json_object"}
+				continue
+			case reqBody.ReasoningEffort == "xhigh" && strings.Contains(msg, "reasoning_effort"):
+				// Not every reasoning model offers xhigh; step down first.
+				reqBody.ReasoningEffort = "high"
+				continue
+			case reqBody.ReasoningEffort != "" && strings.Contains(msg, "reasoning_effort"):
+				reqBody.ReasoningEffort = ""
+				continue
+			case reqBody.Temperature != nil && strings.Contains(msg, "temperature"):
+				// Reasoning models accept only the default temperature.
+				reqBody.Temperature = nil
 				continue
 			}
 		}
@@ -164,10 +180,30 @@ func openaiSupportsStructuredOutput(model string) bool {
 type openaiRequest struct {
 	Model               string                `json:"model"`
 	MaxCompletionTokens int                   `json:"max_completion_tokens"`
-	Temperature         float64               `json:"temperature"`
+	Temperature         *float64              `json:"temperature,omitempty"`
 	Seed                *int                  `json:"seed,omitempty"`
 	Messages            []openaiMessage       `json:"messages"`
 	ResponseFormat      *openaiResponseFormat `json:"response_format,omitempty"`
+	ReasoningEffort     string                `json:"reasoning_effort,omitempty"`
+}
+
+// openaiReasoningModel reports whether model accepts reasoning_effort
+// (the gpt-5 family and the o-series). Others return 400 for it.
+func openaiReasoningModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.HasPrefix(m, "gpt-5") || strings.HasPrefix(m, "o1") ||
+		strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4")
+}
+
+// openaiEffort maps the shared effort vocabulary onto OpenAI's
+// reasoning_effort levels. xhigh is passed through (models such as
+// gpt-5.2 accept it; others step down to high on rejection, see the
+// fallback in Generate) and the Anthropic-only "max" becomes xhigh.
+func openaiEffort(effort string) string {
+	if effort == "max" {
+		return "xhigh"
+	}
+	return effort
 }
 
 type openaiMessage struct {

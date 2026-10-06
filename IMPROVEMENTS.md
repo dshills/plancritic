@@ -259,6 +259,17 @@ under two titles).
 
 ### 10. Update default models and add `--effort`; stop sending `temperature` unconditionally  — Accuracy, forward compatibility
 
+**Status: done.** Anthropic defaults to `claude-opus-5-5`; `--fast` selects the cheaper
+tier per provider (`claude-sonnet-5-5`, `gpt-5-mini`, `gemini-2.5-flash-lite`) when no
+`--model` is given. `--effort low|medium|high|xhigh|max` maps to Anthropic
+`output_config.effort` (turning adaptive thinking on for the 4.6-4.8 families where it
+is off by default), OpenAI `reasoning_effort` (capped at `high`, reasoning models only),
+and Gemini `thinkingConfig.thinkingLevel`; every provider drops the control and retries
+once if the model rejects it. Temperature gating landed in item 3 for Anthropic and now
+has the same reject-and-retry on OpenAI. Effort and the chosen model are in the
+result-cache key. The static prefix was not moved to the `system` field (deferred: it
+would change cache-breakpoint layout for no measured gain).
+
 **Evidence:** The Anthropic default is `claude-sonnet-4-6` and the request never sets a
 `thinking` block, so on that model no reasoning happens before the critique. Current-generation
 models (Sonnet 5.5, Opus 5.5) reason by default with depth controlled by

@@ -38,6 +38,14 @@ export OPENAI_API_KEY=sk-...
 
 If both are set, Anthropic is used by default. Use `--model` to override.
 
+Defaults are the current generation per provider: `claude-opus-5-5`, `gpt-5.2`, and
+`gemini-2.5-flash`. For inner-loop iteration an agent can pass `--fast` to use the
+cheaper tier (`claude-sonnet-5-5`, `gpt-5-mini`, `gemini-2.5-flash-lite`) and keep
+the default for the final gate, and `--effort low|medium|high|xhigh|max` to trade
+reasoning depth for speed and cost on models that support it (Anthropic
+`output_config.effort`, OpenAI `reasoning_effort`, Gemini `thinkingLevel`; a model
+that rejects the control is retried without it). Both affect the result-cache key.
+
 > **Privacy note:** Input content (plan and context files, after redaction) is sent to the configured model provider. Redaction is enabled by default.
 
 ## Usage
@@ -120,7 +128,9 @@ Common overrides:
 | `--context <path>` | — | Additional grounding files (repeatable) |
 | `--profile <name>` | `general` | Built-in checklist profile |
 | `--strict` | false | Strict grounding mode (see below) |
-| `--model <id>` | — | Model override |
+| `--model <id>` | — | Model override (default: `claude-opus-5-5`, `gpt-5.2`, or `gemini-2.5-flash` by provider) |
+| `--fast` | false | Use the provider's cheaper, faster tier (`claude-sonnet-5-5`, `gpt-5-mini`, `gemini-2.5-flash-lite`); ignored when `--model` is set |
+| `--effort <level>` | — | Reasoning effort: `low`, `medium`, `high`, `xhigh`, `max` (default: the model's own) |
 | `--max-tokens <n>` | 16384 | Cap LLM response size; a response that hits the cap is salvaged and flagged (`meta.truncated`) rather than failed |
 | `--temperature <float>` | 0.2 | LLM temperature |
 | `--seed <int>` | — | Seed for reproducibility (if supported) |
