@@ -1087,3 +1087,320 @@ func TestEffectiveModel(t *testing.T) {
 		})
 	}
 }
+
+// --- structured output ---
+
+const testSchema = `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}`
+
+func captureAnthropicRequest(t *testing.T, model string, schema json.RawMessage) map[string]any {
+	t.Helper()
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := anthropicResponse{Content: []anthropicContentBlock{{Type: "text", Text: "{}"}}, StopReason: "end_turn"}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	p := &AnthropicProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: model, OutputSchema: schema}); err != nil {
+		t.Fatal(err)
+	}
+	return captured
+}
+
+func TestAnthropicStructuredOutputGatedByModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-sonnet-5-5", true},
+		{"claude-sonnet-5", true},
+		{"claude-opus-5-5", true},
+		{"claude-opus-4-8", true},
+		{"claude-haiku-4-5", true},
+		{"claude-fable-5-1", true},
+		{"claude-sonnet-4-5", true},
+		{"claude-sonnet-4-5-20250929", true},
+		{"claude-sonnet-4-6", true}, // confirmed live
+		{"claude-opus-4-6", true},   // confirmed live
+		{"claude-opus-4-7", true},
+		{"claude-sonnet-4-20250514", false},
+		{"claude-opus-4-20250514", false},
+		{"claude-3-7-sonnet-latest", false},
+		{"claude-3-5-haiku-20241022", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			req := captureAnthropicRequest(t, tt.model, json.RawMessage(testSchema))
+			oc, present := req["output_config"]
+			if present != tt.want {
+				t.Fatalf("output_config present=%v, want %v", present, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			format := oc.(map[string]any)["format"].(map[string]any)
+			if format["type"] != "json_schema" {
+				t.Errorf("format.type = %v", format["type"])
+			}
+			if _, ok := format["schema"].(map[string]any); !ok {
+				t.Errorf("format.schema missing or not an object: %v", format["schema"])
+			}
+		})
+	}
+}
+
+func TestAnthropicNoSchemaNoOutputConfig(t *testing.T) {
+	req := captureAnthropicRequest(t, "claude-sonnet-5-5", nil)
+	if _, ok := req["output_config"]; ok {
+		t.Error("output_config must be absent when no schema is supplied")
+	}
+}
+
+func TestOpenAIStructuredOutput(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := openaiResponse{Choices: []openaiChoice{{Message: openaiMessage{Role: "assistant", Content: "{}"}, FinishReason: "stop"}}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	p := &OpenAIProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{OutputSchema: json.RawMessage(testSchema)}); err != nil {
+		t.Fatal(err)
+	}
+	rf := captured["response_format"].(map[string]any)
+	if rf["type"] != "json_schema" {
+		t.Fatalf("response_format.type = %v", rf["type"])
+	}
+	js := rf["json_schema"].(map[string]any)
+	if js["strict"] != true || js["name"] == "" {
+		t.Errorf("json_schema should be strict and named: %v", js)
+	}
+	if _, ok := js["schema"].(map[string]any); !ok {
+		t.Errorf("json_schema.schema missing: %v", js["schema"])
+	}
+
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	if rf := captured["response_format"].(map[string]any); rf["type"] != "json_object" {
+		t.Errorf("without a schema response_format.type should be json_object, got %v", rf["type"])
+	}
+}
+
+func TestGeminiStructuredOutput(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := geminiResponse{Candidates: []geminiCandidate{{Content: geminiContent{Parts: []geminiPart{{Text: "{}"}}}, FinishReason: "STOP"}}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	p := &GeminiProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{OutputSchema: json.RawMessage(testSchema)}); err != nil {
+		t.Fatal(err)
+	}
+	gc := captured["generationConfig"].(map[string]any)
+	if _, ok := gc["responseJsonSchema"].(map[string]any); !ok {
+		t.Errorf("generationConfig.responseJsonSchema missing: %v", gc)
+	}
+	if gc["responseMimeType"] != "application/json" {
+		t.Errorf("responseMimeType should still be application/json, got %v", gc["responseMimeType"])
+	}
+
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	if gc := captured["generationConfig"].(map[string]any); gc["responseJsonSchema"] != nil {
+		t.Error("responseJsonSchema must be absent when no schema is supplied")
+	}
+}
+
+func TestAnthropicTemperatureGatedByModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-sonnet-4-6", true},
+		{"claude-opus-4-6", true},
+		{"claude-haiku-4-5", true},
+		{"claude-sonnet-5-5", false},
+		{"claude-sonnet-5", false},
+		{"claude-opus-5-5", false},
+		{"claude-opus-4-8", false},
+		{"claude-opus-4-7", false},
+		{"claude-fable-5-1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			req := captureAnthropicRequest(t, tt.model, nil)
+			_, present := req["temperature"]
+			if present != tt.want {
+				t.Errorf("temperature present=%v, want %v", present, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpenAIStructuredOutputGatedByModel(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		resp := openaiResponse{Choices: []openaiChoice{{Message: openaiMessage{Role: "assistant", Content: "{}"}, FinishReason: "stop"}}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	p := &OpenAIProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{"gpt-5.2", "json_schema"},
+		{"gpt-5-mini", "json_schema"},
+		{"gpt-4o", "json_schema"},
+		{"gpt-4o-mini", "json_schema"},
+		{"gpt-4.1-mini", "json_schema"},
+		{"o3", "json_schema"},
+		{"gpt-4o-2024-08-06", "json_schema"},
+		{"gpt-4-turbo", "json_object"},
+		{"gpt-4", "json_object"},
+		{"gpt-3.5-turbo", "json_object"},
+		{"gpt-4o-2024-05-13", "json_object"},
+		{"chatgpt-4o-latest", "json_object"},
+		{"o1-mini", "json_object"},
+		{"o1-preview", "json_object"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: tt.model, OutputSchema: json.RawMessage(testSchema)}); err != nil {
+				t.Fatal(err)
+			}
+			rf := captured["response_format"].(map[string]any)
+			if rf["type"] != tt.want {
+				t.Errorf("response_format.type = %v, want %v", rf["type"], tt.want)
+			}
+		})
+	}
+}
+
+// --- runtime fallback when a provider rejects a feature ---
+
+func TestAnthropicRetriesWithoutRejectedFeatures(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case b["output_config"] != nil:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"output_config: Extra inputs are not permitted"}}`))
+		case b["temperature"] != nil:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"`temperature` is deprecated for this model.\"}}"))
+		default:
+			_ = json.NewEncoder(w).Encode(anthropicResponse{Content: []anthropicContentBlock{{Type: "text", Text: "{}"}}, StopReason: "end_turn"})
+		}
+	}))
+	defer srv.Close()
+	p := &AnthropicProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+
+	// Sonnet 4.6 is believed to accept both, so the first request carries both.
+	out, _, err := p.Generate(context.Background(), "hi", Settings{Model: "claude-sonnet-4-6", Temperature: 0.2, OutputSchema: json.RawMessage(testSchema)})
+	if err != nil {
+		t.Fatalf("expected fallback to succeed, got %v", err)
+	}
+	if out != "{}" {
+		t.Errorf("unexpected output %q", out)
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("expected 3 requests (schema+temp, temp only, neither), got %d", len(bodies))
+	}
+	if bodies[1]["output_config"] != nil || bodies[1]["temperature"] == nil {
+		t.Errorf("second request should drop only output_config: %v", bodies[1])
+	}
+	if bodies[2]["output_config"] != nil || bodies[2]["temperature"] != nil {
+		t.Errorf("third request should carry neither feature: %v", bodies[2])
+	}
+}
+
+func TestAnthropicUnrelated400IsNotRetried(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: must be positive"}}`))
+	}))
+	defer srv.Close()
+	p := &AnthropicProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+	_, _, err := p.Generate(context.Background(), "hi", Settings{Model: "claude-sonnet-4-6", OutputSchema: json.RawMessage(testSchema)})
+	if err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("expected a 400 error, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("an unrelated 400 must not be retried, got %d calls", calls)
+	}
+}
+
+func TestOpenAIRetriesInJSONModeWhenSchemaRejected(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		if rf, _ := b["response_format"].(map[string]any); rf["type"] == "json_schema" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Invalid parameter: 'response_format' of type 'json_schema' is not supported with this model.","type":"invalid_request_error"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(openaiResponse{Choices: []openaiChoice{{Message: openaiMessage{Role: "assistant", Content: "{}"}, FinishReason: "stop"}}})
+	}))
+	defer srv.Close()
+	p := &OpenAIProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "gpt-5.2", OutputSchema: json.RawMessage(testSchema)}); err != nil {
+		t.Fatalf("expected fallback to succeed, got %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(bodies))
+	}
+	if rf := bodies[1]["response_format"].(map[string]any); rf["type"] != "json_object" {
+		t.Errorf("retry should use json_object, got %v", rf)
+	}
+}
+
+func TestGeminiRetriesWithoutSchemaWhenRejected(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		if gc, _ := b["generationConfig"].(map[string]any); gc["responseJsonSchema"] != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"response_json_schema\" at 'generation_config'","status":"INVALID_ARGUMENT"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(geminiResponse{Candidates: []geminiCandidate{{Content: geminiContent{Parts: []geminiPart{{Text: "{}"}}}, FinishReason: "STOP"}}})
+	}))
+	defer srv.Close()
+	p := &GeminiProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{OutputSchema: json.RawMessage(testSchema)}); err != nil {
+		t.Fatalf("expected fallback to succeed, got %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(bodies))
+	}
+	if gc := bodies[1]["generationConfig"].(map[string]any); gc["responseJsonSchema"] != nil {
+		t.Errorf("retry should drop responseJsonSchema: %v", gc)
+	}
+}

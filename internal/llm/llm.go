@@ -3,6 +3,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -18,6 +19,11 @@ type Settings struct {
 	// "cachedContents/abc123" for Gemini). Only honored by providers
 	// that implement CachingProvider.
 	CachedContentName string
+	// OutputSchema, when non-empty, is a JSON Schema the response must
+	// satisfy. Providers that support native structured output pass it
+	// through (Anthropic output_config, OpenAI json_schema, Gemini
+	// responseJsonSchema); others ignore it and rely on the prompt.
+	OutputSchema json.RawMessage
 }
 
 // Usage reports token counts for a single request. Cache-related fields

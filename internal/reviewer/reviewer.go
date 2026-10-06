@@ -258,6 +258,10 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		Model:       f.Model,
 		Temperature: f.Temperature,
 		MaxTokens:   f.MaxTokens,
+		// Providers with native structured output enforce the shape at
+		// the source; the prompt still carries the same schema as text
+		// for providers (and models) without it.
+		OutputSchema: schema.ModelOutputSchemaJSON(),
 	}
 	if f.HasSeed {
 		settings.Seed = &f.Seed
@@ -315,7 +319,6 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		}
 		rev = rev2
 		verbose("Sanitized invalid JSON escape sequences")
-		result = sanitized
 	}
 
 	// 10. Validate. Build context lookup maps in a single pass; both
@@ -340,36 +343,29 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	}
 	validationErrs := schema.Validate(&rev, len(p.Lines), contextLineCounts)
 	if len(validationErrs) > 0 {
+		// 10a. Mechanical defects (empty or duplicate IDs, inverted or
+		// overlong line ranges) are fixed locally; they need no model.
+		if fixes := schema.AutoFix(&rev, len(p.Lines), contextLineCounts); len(fixes) > 0 {
+			for _, fx := range fixes {
+				verbose("Auto-fixed %s", fx)
+			}
+			validationErrs = schema.Validate(&rev, len(p.Lines), contextLineCounts)
+		}
+	}
+	if len(validationErrs) > 0 {
+		// 10b. Whatever remains needs the model. Only the offending items
+		// are resent when every error is attributable to one.
 		verbose("Validation failed (%d errors), attempting repair...", len(validationErrs))
-
-		repairPrompt := prompt.BuildRepair(result, validationErrs)
-		repairResult, repairUsage, err := modelProvider.Generate(ctx, repairPrompt, settings)
+		repaired, err := repairReview(ctx, modelProvider, settings, rev, validationErrs, repairBounds{
+			PlanName:          filepath.Base(p.FilePath),
+			PlanLines:         len(p.Lines),
+			ContextLineCounts: contextLineCounts,
+			Sources:           prompt.RenderSources(p, contexts),
+		}, verbose)
 		if err != nil {
-			return review.Review{}, Errorf(4, "repair LLM call failed: %v", err)
+			return review.Review{}, err
 		}
-		if repairUsage.InputTokens > 0 {
-			verbose("Repair token usage: input=%d, output=%d", repairUsage.InputTokens, repairUsage.OutputTokens)
-		}
-		repairResult = llm.ExtractJSON(repairResult)
-
-		var rev2 review.Review
-		if err := json.Unmarshal([]byte(repairResult), &rev2); err != nil {
-			sanitized := llm.SanitizeJSON(repairResult)
-			if err2 := json.Unmarshal([]byte(sanitized), &rev2); err2 != nil {
-				return review.Review{}, Errorf(5, "repair response is not valid JSON: %v (pre-sanitize: %v)", err2, err)
-			}
-		}
-
-		validationErrs2 := schema.Validate(&rev2, len(p.Lines), contextLineCounts)
-		if len(validationErrs2) > 0 {
-			fmt.Fprintln(os.Stderr, "Schema validation errors after repair:")
-			for _, e := range validationErrs2 {
-				fmt.Fprintf(os.Stderr, "  %s\n", e)
-			}
-			return review.Review{}, Errorf(5, "LLM output failed schema validation after repair")
-		}
-
-		rev = rev2
+		rev = repaired
 	}
 	verbose("Validation passed")
 

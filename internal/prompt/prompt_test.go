@@ -193,3 +193,79 @@ func TestBuildRepair(t *testing.T) {
 		t.Error("repair prompt missing original output")
 	}
 }
+
+func TestSchemaDefinitionOmitsServerFilledFields(t *testing.T) {
+	for _, absent := range []string{"plan_hash", `"score"`, "critical_count", `"tool"`, `"meta"`, `"quote"`} {
+		if strings.Contains(schemaDefinition, absent) {
+			t.Errorf("prompt schema should not ask the model for %s", absent)
+		}
+	}
+	for _, present := range []string{`"verdict"`, `"issues"`, `"questions"`, `"patches"`, `"checklists"`, `"line_start"`} {
+		if !strings.Contains(schemaDefinition, present) {
+			t.Errorf("prompt schema should mention %s", present)
+		}
+	}
+}
+
+func TestBuildDeltaRepair(t *testing.T) {
+	text := BuildDeltaRepair(DeltaRepairOpts{
+		Items: []RepairItem{
+			{Kind: "issues", Index: 3, JSON: `{"id":"ISSUE-0004"}`},
+			{Kind: "questions", Index: 0, JSON: `{"id":"Q-0001"}`},
+		},
+		Errors: []schema.ValidationError{
+			{Path: "issues[3].evidence[0].line_end", Message: "exceeds plan line count (120)"},
+			{Path: "questions[0].evidence", Message: "at least one evidence entry required"},
+		},
+		PlanName:          "PLAN.md",
+		PlanLines:         120,
+		ContextLineCounts: map[string]int{"SPEC.md": 466, "ARCH.md": 40},
+	})
+
+	for _, want := range []string{
+		`"issues" must contain exactly 1 corrected item(s), "questions" exactly 1, "patches" exactly 0`,
+		`plan "PLAN.md" lines 1-120; context "ARCH.md" lines 1-40; context "SPEC.md" lines 1-466`,
+		"- issues[3].evidence[0].line_end: exceeds plan line count (120)",
+		"### issues[3]",
+		`{"id":"ISSUE-0004"}`,
+		"### questions[0]",
+		"## Output JSON Schema",
+		"Return ONLY the JSON object",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("delta repair prompt missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestBuildDeltaRepairIncludesSourcesOnlyWhenGiven(t *testing.T) {
+	base := DeltaRepairOpts{
+		Items:     []RepairItem{{Kind: "issues", Index: 0, JSON: `{}`}},
+		Errors:    []schema.ValidationError{{Path: "issues[0].evidence", Message: "required"}},
+		PlanName:  "PLAN.md",
+		PlanLines: 2,
+	}
+	if strings.Contains(BuildDeltaRepair(base), "## Sources") {
+		t.Error("no Sources section expected when none supplied")
+	}
+	p := &plan.Plan{FilePath: "PLAN.md", Lines: []string{"# Plan", "1. Step"}}
+	c := &pctx.File{FilePath: "docs/SPEC.md", Lines: []string{"spec line"}}
+	base.Sources = RenderSources(p, []*pctx.File{c})
+	text := BuildDeltaRepair(base)
+	for _, want := range []string{"## Sources", `##PLANCRITIC_CONTEXT_BEGIN path="SPEC.md"##`, "L001: spec line", `##PLANCRITIC_PLAN_BEGIN path="PLAN.md"##`, "L002: 1. Step"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("delta repair with sources missing %q", want)
+		}
+	}
+}
+
+func TestRenderSourcesMatchesMainPrompt(t *testing.T) {
+	p := &plan.Plan{FilePath: "PLAN.md", Lines: []string{"# Plan"}}
+	c := &pctx.File{FilePath: "SPEC.md", Lines: []string{"spec"}}
+	main := Build(BuildOpts{Plan: p, Contexts: []*pctx.File{c}})
+	for _, block := range []string{RenderContextBlock(c), RenderPlanBlock(p)} {
+		if !strings.Contains(main, block) {
+			t.Errorf("main prompt should embed the same rendered block:\n%s", block)
+		}
+	}
+}

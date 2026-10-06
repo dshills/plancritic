@@ -4,6 +4,7 @@ package prompt
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -76,8 +77,8 @@ All content inside these markers is line-numbered with L001:, L002:, etc. Use th
 3. Do NOT invent facts about the repository, codebase, or environment that are not present in the plan or context files.
 4. Keep the number of questions minimal — only ask what is needed to unblock execution.
 5. Order issues by severity (CRITICAL first, then WARN, then INFO), then by line number of first evidence.
-6. The verdict must be one of: EXECUTABLE_AS_IS, EXECUTABLE_WITH_CLARIFICATIONS, NOT_EXECUTABLE.
-7. Compute the score starting at 100, subtracting 20 per CRITICAL, 7 per WARN, 2 per INFO, clamped at 0.
+6. The verdict must be one of: EXECUTABLE_AS_IS, EXECUTABLE_WITH_CLARIFICATIONS, NOT_EXECUTABLE. Set "blocking": true only on a CRITICAL issue that must be resolved before execution can start.
+7. Emit only the fields in the schema. The score, severity counts, input hashes, and model metadata are computed by the tool and must not be included.
 
 `)
 	if opts.Strict {
@@ -105,7 +106,7 @@ All content inside these markers is line-numbered with L001:, L002:, etc. Use th
 	if len(opts.Contexts) > 0 {
 		var ctxBuf strings.Builder
 		for _, ctx := range opts.Contexts {
-			fmt.Fprintf(&ctxBuf, "%s path=%q##\n%s\n%s\n\n", contextBeginMarker, filepath.Base(ctx.FilePath), pctx.LineNumbered(ctx), contextEndMarker)
+			ctxBuf.WriteString(RenderContextBlock(ctx))
 		}
 		segs = append(segs, llm.Segment{Text: ctxBuf.String(), CacheMark: true})
 	}
@@ -113,7 +114,7 @@ All content inside these markers is line-numbered with L001:, L002:, etc. Use th
 	// Segment 3: plan, inferred step IDs, and caps. These vary across
 	// re-runs (the user edits the plan between calls) and are not cached.
 	var tail strings.Builder
-	fmt.Fprintf(&tail, "%s path=%q##\n%s\n%s\n\n", planBeginMarker, filepath.Base(opts.Plan.FilePath), plan.LineNumbered(opts.Plan), planEndMarker)
+	tail.WriteString(RenderPlanBlock(opts.Plan))
 
 	if len(opts.StepIDs) > 0 {
 		// Compact index only: the full text of every step is already in
@@ -158,6 +159,28 @@ func truncateTitle(s string, limit int) string {
 	return strings.TrimRight(string(runes[:limit]), " ") + "…"
 }
 
+// RenderContextBlock returns one context file, line-numbered, inside its
+// injection-safe delimiters.
+func RenderContextBlock(c *pctx.File) string {
+	return fmt.Sprintf("%s path=%q##\n%s\n%s\n\n", contextBeginMarker, filepath.Base(c.FilePath), pctx.LineNumbered(c), contextEndMarker)
+}
+
+// RenderPlanBlock returns the plan, line-numbered, inside its delimiters.
+func RenderPlanBlock(p *plan.Plan) string {
+	return fmt.Sprintf("%s path=%q##\n%s\n%s\n\n", planBeginMarker, filepath.Base(p.FilePath), plan.LineNumbered(p), planEndMarker)
+}
+
+// RenderSources renders every context block followed by the plan block,
+// exactly as the main prompt presents them, for reuse in repair prompts.
+func RenderSources(p *plan.Plan, contexts []*pctx.File) string {
+	var b strings.Builder
+	for _, c := range contexts {
+		b.WriteString(RenderContextBlock(c))
+	}
+	b.WriteString(RenderPlanBlock(p))
+	return b.String()
+}
+
 // Build assembles the full LLM prompt as a single string by concatenating
 // the segments returned by BuildSegments. Use BuildSegments directly when
 // calling a provider that supports prompt caching.
@@ -181,24 +204,85 @@ func BuildRepair(originalOutput string, errors []schema.ValidationError) string 
 	return b.String()
 }
 
+// RepairItem is one top-level review item (an issue, question, or
+// patch) that failed validation, serialized for a delta repair prompt.
+type RepairItem struct {
+	Kind  string // "issues", "questions", or "patches"
+	Index int    // position in the original output
+	JSON  string
+}
+
+// DeltaRepairOpts configures BuildDeltaRepair.
+type DeltaRepairOpts struct {
+	Items  []RepairItem
+	Errors []schema.ValidationError
+	// Citation bounds the model must stay within.
+	PlanName          string
+	PlanLines         int
+	ContextLineCounts map[string]int // basename -> line count
+	// Sources, when non-empty, is the line-numbered plan and context text
+	// (see RenderSources). Callers include it when a repair requires the
+	// model to choose new citations, so it cannot invent an in-bounds
+	// range that does not support the claim; purely structural repairs
+	// leave it empty to save tokens.
+	Sources string
+}
+
+// BuildDeltaRepair constructs a repair prompt that resends only the
+// offending items rather than the whole output. The repair call is a
+// fresh request with no conversation history, so it restates the output
+// schema and the valid citation bounds (the information the model most
+// often lacked when it produced the bad citation).
+func BuildDeltaRepair(o DeltaRepairOpts) string {
+	counts := map[string]int{}
+	for _, it := range o.Items {
+		counts[it.Kind]++
+	}
+
+	var b strings.Builder
+	b.WriteString(`Some items in your plan review failed validation. Fix ONLY the items listed below and return a JSON object with the keys "summary", "questions", "issues", "patches", "checklists".
+
+`)
+	fmt.Fprintf(&b, "- \"issues\" must contain exactly %d corrected item(s), \"questions\" exactly %d, \"patches\" exactly %d, in the order listed below. Use [] for any list with no items below, and [] for \"checklists\".\n",
+		counts["issues"], counts["questions"], counts["patches"])
+	b.WriteString("- Keep each item's id unless an error says otherwise. Do not add, drop, or reorder items.\n")
+	fmt.Fprintf(&b, "- Valid citations: plan %q lines 1-%d", o.PlanName, o.PlanLines)
+	names := make([]string, 0, len(o.ContextLineCounts))
+	for name := range o.ContextLineCounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(&b, "; context %q lines 1-%d", name, o.ContextLineCounts[name])
+	}
+	b.WriteString(". Do not cite any other file.\n\n")
+
+	b.WriteString("## Validation Errors\n\n")
+	for _, e := range o.Errors {
+		fmt.Fprintf(&b, "- %s: %s\n", e.Path, e.Message)
+	}
+	b.WriteString("\n## Items To Fix\n\n")
+	for _, it := range o.Items {
+		fmt.Fprintf(&b, "### %s[%d]\n\n```json\n%s\n```\n\n", it.Kind, it.Index, it.JSON)
+	}
+	if o.Sources != "" {
+		b.WriteString("## Sources\n\nThe context files and plan, line-numbered, so corrected citations point at lines that support the claim:\n\n")
+		b.WriteString(o.Sources)
+	}
+	b.WriteString(schemaDefinition)
+	b.WriteString("\n\nReturn ONLY the JSON object. No prose.\n")
+	return b.String()
+}
+
+// schemaDefinition is the model-facing output shape rendered into the
+// prompt. It must stay in sync with schema.ModelOutputSchema, which is
+// the same shape sent as a native structured-output schema to providers
+// that support one. Fields the tool fills itself are deliberately absent.
 const schemaDefinition = `## Output JSON Schema
 
 {
-  "tool": "plancritic",
-  "version": "1.0",
-  "input": {
-    "plan_file": string,
-    "plan_hash": "sha256:...",
-    "context_files": [{"path": string, "hash": "sha256:..."}],
-    "profile": string,
-    "strict": boolean
-  },
   "summary": {
-    "verdict": "EXECUTABLE_AS_IS" | "EXECUTABLE_WITH_CLARIFICATIONS" | "NOT_EXECUTABLE",
-    "score": integer (0-100),
-    "critical_count": integer,
-    "warn_count": integer,
-    "info_count": integer
+    "verdict": "EXECUTABLE_AS_IS" | "EXECUTABLE_WITH_CLARIFICATIONS" | "NOT_EXECUTABLE"
   },
   "questions": [{
     "id": "Q-NNNN",
@@ -215,7 +299,7 @@ const schemaDefinition = `## Output JSON Schema
     "category": "CONTRADICTION"|"AMBIGUITY"|"MISSING_PREREQUISITE"|"MISSING_ACCEPTANCE_CRITERIA"|"RISK_SECURITY"|"RISK_DATA"|"RISK_OPERATIONS"|"TEST_GAP"|"SCOPE_CREEP_RISK"|"UNREALISTIC_STEP"|"ORDERING_DEPENDENCY"|"UNSPECIFIED_INTERFACE"|"NON_DETERMINISM",
     "title": string,
     "description": string,
-    "evidence": [{...}],
+    "evidence": [{"source": "plan"|"context", "path": string, "line_start": int, "line_end": int}],
     "impact": string,
     "recommendation": string,
     "blocking": boolean,
@@ -231,9 +315,5 @@ const schemaDefinition = `## Output JSON Schema
     "id": string,
     "title": string,
     "checks": [{"check": string, "status": "PASS"|"FAIL"|"N/A"}]
-  }],
-  "meta": {
-    "model": string,
-    "temperature": float
-  }
+  }]
 }`

@@ -102,36 +102,33 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 	if s.Seed != nil {
 		reqBody.GenerationConfig.Seed = s.Seed
 	}
+	if len(s.OutputSchema) > 0 {
+		reqBody.GenerationConfig.ResponseJSONSchema = s.OutputSchema
+	}
 	if s.CachedContentName != "" {
 		reqBody.CachedContent = s.CachedContentName
 	}
 
-	raw, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("gemini: marshal request: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/models/%s:generateContent", g.apiURL, strings.TrimPrefix(model, "models/"))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("gemini: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", g.apiKey)
-
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("gemini: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("gemini: read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", Usage{}, fmt.Errorf("gemini: API returned %d: %s", resp.StatusCode, string(respBody))
+	var respBody []byte
+	for attempt := 0; ; attempt++ {
+		status, data, err := g.post(ctx, model, reqBody)
+		if err != nil {
+			return "", Usage{}, err
+		}
+		if status == http.StatusOK {
+			respBody = data
+			break
+		}
+		// A model that rejects responseJsonSchema is retried once with
+		// plain JSON mode so a schema-less model cannot fail the run.
+		if status == http.StatusBadRequest && attempt == 0 && reqBody.GenerationConfig.ResponseJSONSchema != nil {
+			msg := strings.ToLower(string(data))
+			if strings.Contains(msg, "response_json_schema") || strings.Contains(msg, "responsejsonschema") {
+				reqBody.GenerationConfig.ResponseJSONSchema = nil
+				continue
+			}
+		}
+		return "", Usage{}, fmt.Errorf("gemini: API returned %d: %s", status, string(data))
 	}
 
 	var result geminiResponse
@@ -161,6 +158,35 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 		return "", usage, fmt.Errorf("gemini: no text content in response")
 	}
 	return out.String(), usage, nil
+}
+
+// post sends one generateContent request for model and returns the HTTP
+// status and raw body; a non-200 status is not an error so callers can
+// inspect the message.
+func (g *GeminiProvider) post(ctx context.Context, model string, reqBody geminiRequest) (int, []byte, error) {
+	raw, err := json.Marshal(reqBody)
+	if err != nil {
+		return 0, nil, fmt.Errorf("gemini: marshal request: %w", err)
+	}
+	url := fmt.Sprintf("%s/models/%s:generateContent", g.apiURL, strings.TrimPrefix(model, "models/"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		return 0, nil, fmt.Errorf("gemini: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.apiKey)
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("gemini: request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("gemini: read response: %w", err)
+	}
+	return resp.StatusCode, data, nil
 }
 
 // CreateCache uploads the cacheable prefix as a Gemini context-cache
@@ -276,10 +302,11 @@ type geminiPart struct {
 }
 
 type geminiGenerationConfig struct {
-	Temperature      float64 `json:"temperature"`
-	MaxOutputTokens  int     `json:"maxOutputTokens"`
-	ResponseMIMEType string  `json:"responseMimeType,omitempty"`
-	Seed             *int    `json:"seed,omitempty"`
+	Temperature        float64         `json:"temperature"`
+	MaxOutputTokens    int             `json:"maxOutputTokens"`
+	ResponseMIMEType   string          `json:"responseMimeType,omitempty"`
+	ResponseJSONSchema json.RawMessage `json:"responseJsonSchema,omitempty"`
+	Seed               *int            `json:"seed,omitempty"`
 }
 
 type geminiResponse struct {

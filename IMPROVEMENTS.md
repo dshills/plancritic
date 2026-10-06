@@ -71,6 +71,19 @@ review so output flags (`--format`, `--severity-threshold`, `--out`) still apply
 
 ### 3. Use provider-native structured output and retire the repair round trip  — Accuracy, Speed, Tokens
 
+**Status: done.** `schema.ModelOutputSchema` is a strict-mode JSON Schema of the
+model-facing shape (no tool/version/input/score/counts/meta, no quote). Anthropic
+receives it as `output_config.format` (every family from 4.5 on, including the
+default Sonnet 4.6, confirmed live), OpenAI as `response_format: json_schema`
+(strict), Gemini as `responseJsonSchema`; all three verified live. If a model rejects
+the schema (or, on Anthropic, `temperature`), the request is retried once without
+that feature, so a stale capability list never fails a run. Remaining semantic
+errors are first auto-fixed locally (duplicate or
+empty IDs, inverted or overlong line ranges) and only then repaired by resending just
+the offending items with the valid citation bounds. Also landed from item 10: Anthropic
+requests omit `temperature` on model families that reject it, so `--model
+claude-sonnet-5-5` and `claude-opus-5-5` work.
+
 **Evidence:** Today the model is told "output ONLY valid JSON" and the runner then strips
 fences (`llm.ExtractJSON`), rewrites bad escapes (`llm.SanitizeJSON`), validates, and on
 failure makes a *second full LLM call* with the whole original output embedded in the repair

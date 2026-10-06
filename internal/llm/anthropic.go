@@ -72,41 +72,47 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 	}
 
 	reqBody := anthropicRequest{
-		Model:       model,
-		MaxTokens:   maxTokens,
-		Temperature: &s.Temperature,
+		Model:     model,
+		MaxTokens: maxTokens,
 		Messages: []anthropicMessage{
 			{Role: "user", Content: blocks},
 		},
 	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("anthropic: marshal request: %w", err)
+	if anthropicAcceptsTemperature(model) {
+		reqBody.Temperature = &s.Temperature
+	}
+	if len(s.OutputSchema) > 0 && anthropicSupportsStructuredOutput(model) {
+		reqBody.OutputConfig = &anthropicOutputConfig{
+			Format: &anthropicOutputFormat{Type: "json_schema", Schema: s.OutputSchema},
+		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.apiURL, bytes.NewReader(body))
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("anthropic: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", a.apiKey)
-	req.Header.Set("Anthropic-Version", anthropicAPIVersion)
-	req.Header.Set("Anthropic-Beta", "prompt-caching-2024-07-31")
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("anthropic: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("anthropic: read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", Usage{}, fmt.Errorf("anthropic: API returned %d: %s", resp.StatusCode, string(respBody))
+	var respBody []byte
+	for attempt := 0; ; attempt++ {
+		status, data, err := a.post(ctx, reqBody)
+		if err != nil {
+			return "", Usage{}, err
+		}
+		if status == http.StatusOK {
+			respBody = data
+			break
+		}
+		// A 400 that names a feature this model does not accept is
+		// retried without that feature, so a stale capability list
+		// degrades to prompt-only JSON (or default sampling) instead of
+		// failing the run. At most one retry per feature.
+		if status == http.StatusBadRequest && attempt < 2 {
+			msg := strings.ToLower(string(data))
+			switch {
+			case reqBody.OutputConfig != nil && strings.Contains(msg, "output_config"):
+				reqBody.OutputConfig = nil
+				continue
+			case reqBody.Temperature != nil && strings.Contains(msg, "temperature"):
+				reqBody.Temperature = nil
+				continue
+			}
+		}
+		return "", Usage{}, fmt.Errorf("anthropic: API returned %d: %s", status, string(data))
 	}
 
 	var result anthropicResponse
@@ -137,11 +143,96 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 	return out.String(), usage, nil
 }
 
+// post sends one Messages API request and returns the HTTP status and
+// raw body. Transport and read failures are returned as errors; a
+// non-200 status is not, so the caller can inspect the message.
+func (a *AnthropicProvider) post(ctx context.Context, reqBody anthropicRequest) (int, []byte, error) {
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return 0, nil, fmt.Errorf("anthropic: marshal request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.apiURL, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("anthropic: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", a.apiKey)
+	req.Header.Set("Anthropic-Version", anthropicAPIVersion)
+	req.Header.Set("Anthropic-Beta", "prompt-caching-2024-07-31")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("anthropic: request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("anthropic: read response: %w", err)
+	}
+	return resp.StatusCode, data, nil
+}
+
 type anthropicRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	Temperature *float64           `json:"temperature,omitempty"`
-	Messages    []anthropicMessage `json:"messages"`
+	Model        string                 `json:"model"`
+	MaxTokens    int                    `json:"max_tokens"`
+	Temperature  *float64               `json:"temperature,omitempty"`
+	Messages     []anthropicMessage     `json:"messages"`
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+}
+
+type anthropicOutputConfig struct {
+	Format *anthropicOutputFormat `json:"format,omitempty"`
+}
+
+type anthropicOutputFormat struct {
+	Type   string          `json:"type"`
+	Schema json.RawMessage `json:"schema"`
+}
+
+// noTemperatureModelPrefixes lists model families that return 400 when
+// a temperature is supplied (sampling controls were removed starting
+// with Opus 4.7 and the 5.x generation). Opus/Sonnet 4.6, Haiku 4.5, and
+// older models still accept it. A model that unexpectedly rejects it is
+// retried without by GenerateSegments.
+var noTemperatureModelPrefixes = []string{
+	"claude-fable-",
+	"claude-mythos-",
+	"claude-opus-5",
+	"claude-opus-4-8",
+	"claude-opus-4-7",
+	"claude-sonnet-5",
+}
+
+func anthropicAcceptsTemperature(model string) bool {
+	m := strings.ToLower(model)
+	for _, p := range noTemperatureModelPrefixes {
+		if strings.HasPrefix(m, p) {
+			return false
+		}
+	}
+	return true
+}
+
+// noStructuredOutputModelPrefixes lists model families that predate
+// output_config.format. Every family from the 4.5 generation onward
+// accepts it (confirmed live for Sonnet 4.6 and Opus 4.6, which some
+// documentation omits). A model that unexpectedly rejects the field is
+// retried without it by GenerateSegments.
+var noStructuredOutputModelPrefixes = []string{
+	"claude-3",
+	"claude-sonnet-4-0", "claude-sonnet-4-2", // Sonnet 4 (e.g. claude-sonnet-4-20250514)
+	"claude-opus-4-0", "claude-opus-4-2", // Opus 4
+}
+
+func anthropicSupportsStructuredOutput(model string) bool {
+	m := strings.ToLower(model)
+	for _, p := range noStructuredOutputModelPrefixes {
+		if strings.HasPrefix(m, p) {
+			return false
+		}
+	}
+	return true
 }
 
 type anthropicMessage struct {

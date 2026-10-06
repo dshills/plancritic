@@ -673,11 +673,13 @@ func TestEnvFloat(t *testing.T) {
 type callCountMockProvider struct {
 	responses []string
 	callIdx   int
+	prompts   []string // every prompt received, in order
 }
 
 func (m *callCountMockProvider) Name() string { return "mock" }
 
-func (m *callCountMockProvider) Generate(_ context.Context, _ string, _ llm.Settings) (string, llm.Usage, error) {
+func (m *callCountMockProvider) Generate(_ context.Context, prompt string, _ llm.Settings) (string, llm.Usage, error) {
+	m.prompts = append(m.prompts, prompt)
 	if m.callIdx >= len(m.responses) {
 		return "", llm.Usage{}, errors.New("no more mock responses")
 	}
@@ -863,5 +865,162 @@ func TestRunCheckProviderErrorIsNotCached(t *testing.T) {
 	}
 	if mock.Calls != 2 {
 		t.Errorf("a failed run must not populate the cache, provider calls = %d", mock.Calls)
+	}
+}
+
+// --- local auto-fix and delta repair ---
+
+func TestRunCheckAutoFixAvoidsRepairCall(t *testing.T) {
+	// No trailing newline: the plan is exactly 2 lines.
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	// Two issues with the same ID; the second cites past the end of the
+	// 2-line plan and has an inverted range. All of it is mechanical.
+	resp := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"a","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]},
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"b","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":99,"line_end":2}]}
+	],"questions":[]}`
+	mock := &llm.MockProvider{Response: resp}
+	f := cacheTestFlags(t, mock)
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 1 {
+		t.Fatalf("mechanical defects should be fixed locally without a repair call, got %d calls", mock.Calls)
+	}
+	rev := readReview(t, f.out)
+	if len(rev.Issues) != 2 {
+		t.Fatalf("expected 2 issues, got %d", len(rev.Issues))
+	}
+	ids := map[string]bool{rev.Issues[0].ID: true, rev.Issues[1].ID: true}
+	if len(ids) != 2 {
+		t.Errorf("duplicate IDs should have been renumbered: %v", ids)
+	}
+	for _, iss := range rev.Issues {
+		if iss.Title == "b" {
+			ev := iss.Evidence[0]
+			if ev.LineStart != 2 || ev.LineEnd != 2 {
+				t.Errorf("range should be swapped then clamped to 2-2, got %d-%d", ev.LineStart, ev.LineEnd)
+			}
+			if ev.Quote != "1. Step A" {
+				t.Errorf("quote should be reconstructed from the fixed range, got %q", ev.Quote)
+			}
+		}
+	}
+}
+
+func TestRunCheckDeltaRepairMergesOnlyOffendingItems(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+	first := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"Keep me","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]},
+	  {"id":"ISSUE-0002","severity":"BOGUS","category":"AMBIGUITY","title":"Broken","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}]}
+	],"questions":[]}`
+	repair := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0002","severity":"INFO","category":"AMBIGUITY","title":"Fixed","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}]}
+	],"questions":[],"patches":[],"checklists":[]}`
+	mock := &callCountMockProvider{responses: []string{first, repair}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if mock.callIdx != 2 {
+		t.Fatalf("expected exactly one repair call, got %d calls total", mock.callIdx)
+	}
+	repairPrompt := mock.prompts[1]
+	if strings.Contains(repairPrompt, "Keep me") {
+		t.Error("delta repair must not resend the valid issue")
+	}
+	if !strings.Contains(repairPrompt, "Broken") || !strings.Contains(repairPrompt, "issues[1].severity") {
+		t.Errorf("delta repair should resend the offending issue with its error:\n%s", repairPrompt)
+	}
+
+	rev := readReview(t, f.out)
+	if len(rev.Issues) != 2 {
+		t.Fatalf("expected 2 issues after merge, got %d", len(rev.Issues))
+	}
+	titles := map[string]bool{rev.Issues[0].Title: true, rev.Issues[1].Title: true}
+	if !titles["Keep me"] || !titles["Fixed"] {
+		t.Errorf("merged issues should be the kept original and the repaired one, got %v", titles)
+	}
+}
+
+func TestRunCheckDeltaRepairShortResponseIsSchemaError(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+	first := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"BOGUS","category":"AMBIGUITY","title":"Broken","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
+	],"questions":[]}`
+	repair := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[],"questions":[],"patches":[],"checklists":[]}`
+	mock := &callCountMockProvider{responses: []string{first, repair}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	err := runCheck(context.Background(), planPath, f)
+	assertExitCode(t, err, 5)
+}
+
+func TestRunCheckFullRepairWhenErrorOutsideItems(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+	first := `{"summary":{"verdict":"MAYBE"},"issues":[],"questions":[]}`
+	mock := &callCountMockProvider{responses: []string{first, validMockResponse()}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mock.prompts[1], "## Original Output") {
+		t.Error("an error outside indexed items should fall back to the whole-output repair prompt")
+	}
+}
+
+func TestRunCheckDeltaRepairSendsSourcesForEvidenceErrors(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	// Issue with no evidence at all: the model must pick a citation, so
+	// the repair prompt has to carry the plan text.
+	first := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"No evidence","description":"d","evidence":[]}
+	],"questions":[]}`
+	repair := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"No evidence","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}]}
+	],"questions":[],"patches":[],"checklists":[]}`
+	mock := &callCountMockProvider{responses: []string{first, repair}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mock.prompts[1], "L002: 1. Step A") {
+		t.Error("evidence repair should include the line-numbered plan")
+	}
+	// A severity-only error needs no sources (see the merge test above).
+	severityOnly := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"BOGUS","category":"AMBIGUITY","title":"x","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
+	],"questions":[]}`
+	mock2 := &callCountMockProvider{responses: []string{severityOnly, repair}}
+	f2 := cacheTestFlags(t, nil)
+	f2.provider = mock2
+	planPath2 := writeTempPlan(t, "# Plan\n1. Step A")
+	if err := runCheck(context.Background(), planPath2, f2); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(mock2.prompts[1], "## Sources") {
+		t.Error("structural repair should not resend the plan text")
+	}
+}
+
+func TestRunCheckFullRepairSendsAutoFixedOutput(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	// Invalid verdict forces a full repair; the duplicate ID is auto-fixed
+	// first and the repair prompt must show the fixed IDs.
+	first := `{"summary":{"verdict":"MAYBE"},"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"a","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]},
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"b","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
+	],"questions":[]}`
+	mock := &callCountMockProvider{responses: []string{first, validMockResponse()}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mock.prompts[1], `"ISSUE-0002"`) {
+		t.Error("full repair should send the auto-fixed review, not the raw output")
 	}
 }

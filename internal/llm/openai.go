@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -57,35 +58,37 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 		},
 		ResponseFormat: &openaiResponseFormat{Type: "json_object"},
 	}
+	if len(s.OutputSchema) > 0 && openaiSupportsStructuredOutput(model) {
+		reqBody.ResponseFormat = &openaiResponseFormat{
+			Type:       "json_schema",
+			JSONSchema: &openaiJSONSchema{Name: "plancritic_review", Strict: true, Schema: s.OutputSchema},
+		}
+	}
 	if s.Seed != nil {
 		reqBody.Seed = s.Seed
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("openai: marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiURL, bytes.NewReader(body))
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("openai: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+o.apiKey)
-
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("openai: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", Usage{}, fmt.Errorf("openai: read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", Usage{}, fmt.Errorf("openai: API returned %d: %s", resp.StatusCode, string(respBody))
+	var respBody []byte
+	for attempt := 0; ; attempt++ {
+		status, data, err := o.post(ctx, reqBody)
+		if err != nil {
+			return "", Usage{}, err
+		}
+		if status == http.StatusOK {
+			respBody = data
+			break
+		}
+		// A model that rejects json_schema is retried once in plain JSON
+		// mode so a stale capability list cannot fail the run.
+		if status == http.StatusBadRequest && attempt == 0 &&
+			reqBody.ResponseFormat != nil && reqBody.ResponseFormat.Type == "json_schema" {
+			msg := strings.ToLower(string(data))
+			if strings.Contains(msg, "response_format") || strings.Contains(msg, "json_schema") {
+				reqBody.ResponseFormat = &openaiResponseFormat{Type: "json_object"}
+				continue
+			}
+		}
+		return "", Usage{}, fmt.Errorf("openai: API returned %d: %s", status, string(data))
 	}
 
 	var result openaiResponse
@@ -110,6 +113,52 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 	return choice.Message.Content, usage, nil
 }
 
+// post sends one Chat Completions request and returns the HTTP status
+// and raw body; a non-200 status is not an error so callers can inspect it.
+func (o *OpenAIProvider) post(ctx context.Context, reqBody openaiRequest) (int, []byte, error) {
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return 0, nil, fmt.Errorf("openai: marshal request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiURL, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("openai: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+o.apiKey)
+
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("openai: request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("openai: read response: %w", err)
+	}
+	return resp.StatusCode, data, nil
+}
+
+// openaiSupportsStructuredOutput reports whether model accepts
+// response_format json_schema. The JSON-mode-only generation (gpt-3.5,
+// gpt-4, gpt-4-turbo) returns 400 for it and keeps json_object instead;
+// gpt-4o, gpt-4.1, gpt-4.5, the gpt-5 family, and the o-series support it.
+func openaiSupportsStructuredOutput(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "gpt-3"):
+		return false
+	case strings.HasPrefix(m, "gpt-4") && !strings.HasPrefix(m, "gpt-4o") && !strings.HasPrefix(m, "gpt-4."):
+		return false
+	case m == "gpt-4o-2024-05-13", m == "chatgpt-4o-latest",
+		strings.HasPrefix(m, "o1-mini"), strings.HasPrefix(m, "o1-preview"):
+		// Snapshots that predate structured outputs, and the o1 previews.
+		return false
+	}
+	return true
+}
+
 type openaiRequest struct {
 	Model               string                `json:"model"`
 	MaxCompletionTokens int                   `json:"max_completion_tokens"`
@@ -125,7 +174,14 @@ type openaiMessage struct {
 }
 
 type openaiResponseFormat struct {
-	Type string `json:"type"`
+	Type       string            `json:"type"`
+	JSONSchema *openaiJSONSchema `json:"json_schema,omitempty"`
+}
+
+type openaiJSONSchema struct {
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 type openaiResponse struct {

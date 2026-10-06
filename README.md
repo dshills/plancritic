@@ -165,6 +165,14 @@ model settings produces a new key and a fresh review.
 
 ## Output Format
 
+The model is held to a JSON Schema at the provider level wherever the provider
+supports it (Anthropic `output_config` on Sonnet 5 / Opus 5 / Haiku 4.5 and later,
+OpenAI strict `json_schema`, Gemini `responseJsonSchema`); other models get the
+same schema as prompt text. Citations are then checked against the real files:
+mechanical slips (duplicate IDs, inverted or overlong line ranges) are fixed locally,
+and anything else is sent back for repair as a delta containing only the offending
+items.
+
 JSON output follows a strict schema:
 
 ```json
