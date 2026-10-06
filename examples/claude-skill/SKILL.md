@@ -47,7 +47,7 @@ If context is thin or the codebase is unfamiliar, add `--strict`. This forces th
 
 ## Workflow
 
-1. **Run plancritic with JSON output**, even if the user wants a Markdown summary later — JSON is what gets parsed and acted on.
+1. **Run plancritic**, keeping the full JSON for the next run's `--baseline`:
 
    ```bash
    plancritic check PLAN.md \
@@ -56,30 +56,37 @@ If context is thin or the codebase is unfamiliar, add `--strict`. This forces th
      --profile <selected-profile> \
      --format json \
      --out /tmp/plancritic.json \
-     --patch-out /tmp/plancritic.patch \
+     --quiet \
      --fail-on not_executable
    ```
 
-   Add `--strict` for unfamiliar repos. Add other `--context` flags as appropriate.
+   `--quiet` prints only the `VERDICT` line to stdout. Add `--strict` for unfamiliar repos and other `--context` flags as appropriate. Add `--patch-out /tmp/plancritic.patch` only when the user wants suggested plan edits, because it asks the model to write them.
 
 2. **Capture the exit code.** `0` = passed the fail threshold. `2` = verdict at/above the fail threshold (blocking). `3/4/5` = input, provider, or schema errors — surface these as setup problems, not plan problems.
 
-3. **Parse `/tmp/plancritic.json`** and report in this order:
+3. **Read the result in compact form.** Re-run the identical command with `--format compact --out /tmp/plancritic.txt` in place of the JSON flags. The output format does not affect the cache key, so this second run is a local cache hit: no model call, no tokens, `cached` in the header. Read `/tmp/plancritic.txt`, which has one line per finding:
+
+   - `VERDICT <verdict> score=<n> critical=<n> warn=<n> info=<n> ...` is always the first line.
+   - `ISSUE-NNNN <SEVERITY>[(blocking)] <CATEGORY> PLAN.md:L<start>[-<end>] "<title>" -> <recommendation> [tags]`
+   - `Q-NNNN <SEVERITY> PLAN.md:L<line> "<question>" -> <why needed>`
+   - Findings tagged `local` come from a zero-token text check, not the model; treat them as low-priority hints.
+
+   There is no quoted plan text in this format; open the cited PLAN.md lines when you need the wording. Report in this order:
 
    - **Verdict and score** — one line. e.g. `EXECUTABLE_WITH_CLARIFICATIONS · score 72 · 2 critical, 5 warn, 7 info`.
-   - **Critical issues** — every one, with file/section reference and the cited evidence excerpt. These are blocking.
+   - **Critical issues** — every one, with its line reference and the cited plan text. These are blocking.
    - **Open questions** — list them; these are what the user needs to answer to unblock execution.
    - **Warnings** — group by category (`RISK_SECURITY`, `TEST_GAP`, `ORDERING_DEPENDENCY`, etc.). Summarize rather than dump.
    - **Info** — only mention if the count is small or if a specific item is genuinely actionable.
 
-4. **Spec coverage.** When `SPEC.md` exists, pass it with `--spec SPEC.md` (instead of, or in addition to, `--context`). The result then carries a `coverage` block: every spec requirement with its status (`COVERED`, `PARTIAL`, `UNCOVERED`), the plan lines that implement it, and `out_of_scope` plan work with no basis in the spec. Report the `UNCOVERED` and `PARTIAL` requirements and the out-of-scope items; do not re-derive coverage by reading both documents yourself.
+4. **Spec coverage.** With `--spec`, the compact output carries a `COVERAGE covered=<n> partial=<n> uncovered=<n> out_of_scope=<n>` line, then one line per gap: `REQ-NNNN UNCOVERED|PARTIAL SPEC.md:L<line> "<requirement>" -> <what is missing>` and `SCOPE-NNNN OUT_OF_SCOPE PLAN.md:L<line> "<plan step>" -> <note>`. Covered requirements are only counted. Report every `UNCOVERED` and `PARTIAL` requirement and every out-of-scope item; do not re-derive coverage by reading both documents yourself.
 
-5. **Patches.** If `/tmp/plancritic.patch` is non-empty, summarize what the patch changes and ask whether to apply it (`git apply /tmp/plancritic.patch`). Never apply automatically — the user reviews plan edits before they land.
+5. **Patches.** If you passed `--patch-out` and `/tmp/plancritic.patch` is non-empty, summarize what the patch changes and ask whether to apply it (`git apply /tmp/plancritic.patch`). Never apply automatically — the user reviews plan edits before they land.
 
 6. **Decide.**
    - `EXECUTABLE_AS_IS` → confirm the plan is ready, suggest committing PLAN.md, then proceed to implementation.
    - `EXECUTABLE_WITH_CLARIFICATIONS` → list the questions, wait for answers, recommend re-running plancritic after the plan is updated.
-   - `NOT_EXECUTABLE` → halt. The plan must be revised before any code is written. Offer concrete patch suggestions from the JSON or from the `--patch-out` diff.
+   - `NOT_EXECUTABLE` → halt. The plan must be revised before any code is written. Offer concrete fixes for the cited lines, or the `--patch-out` diff if one was requested.
 
 ## Wording Iterations
 
@@ -87,26 +94,31 @@ While rewording a plan (vague phrases, TODOs, empty sections) run `plancritic li
 
 ## Re-run Discipline
 
-After the user revises PLAN.md, re-run plancritic with the same flags plus
-`--baseline <previous JSON output>`: the result then says exactly which findings were
-resolved, which persist, and which are new (fingerprints match findings by cited text,
-not by ID or line number), so you do not have to diff two reports by hand. A revision that resolves the cited issues should move the verdict up and the score should rise meaningfully (>10 points). If the score barely changes, the revision did not actually address the cited evidence — say so plainly.
+After the user revises PLAN.md, copy the previous result aside
+(`cp /tmp/plancritic.json /tmp/plancritic.prev.json`) and re-run steps 1 and 3 with
+`--baseline /tmp/plancritic.prev.json` added to both commands. In compact output each
+finding is then tagged `[new]` or `[persisting]`, resolved ones appear as `RESOLVED`
+lines, and the `VERDICT` line gains `new=… persisting=… resolved=… score_change=…`.
+Fingerprints match findings by cited text, not by ID or line number, so you do not have
+to diff two reports by hand. A revision that resolves the cited issues should move the verdict up and the score should rise meaningfully (>10 points). If the score barely changes, the revision did not actually address the cited evidence — say so plainly.
 
 ## Flag Reference (most-used)
 
 | Flag | When to use |
 |---|---|
-| `--context <path>` (repeatable) | Always. Pass SPEC, tree, constraints. |
+| `--spec <path>` | Whenever a spec exists. Adds the coverage matrix. |
+| `--context <path>` (repeatable) | Repo tree, constraints, architecture docs. |
 | `--profile <name>` | Always. Match the repo. |
 | `--strict` | Unfamiliar repos, or when the plan makes unverifiable claims about codebase state. |
-| `--format json` | Default for parsing. Use `md` only when the user asks for a human-readable report. |
-| `--format compact` | One line per finding with `file:line` references and no quotes; the cheapest way to read a result back into your own context. `--out` writes the selected format, so to keep full JSON as well run `--format json --out review.json --quiet` and read the `VERDICT` line from stdout. |
+| `--format json` | For the file you keep as the next run's `--baseline`. |
+| `--format compact` | For reading the result. One line per finding with `file:line` references and no quotes. Re-running with only the format changed is a free cache hit. Use `md` only when the user asks for a human-readable report. |
 | `--quiet` | Print only the `VERDICT` line to stdout; pair with `--out`. |
-| `--out <path>` | Always write JSON to a file so it can be re-read. |
-| `--patch-out <path>` | Always — costs nothing and gives the user an applyable diff if patches are suggested. |
+| `--out <path>` | Always write to a file so the result can be re-read. |
+| `--patch-out <path>` | When the user wants suggested plan edits. It asks the model to write patches, so it costs output tokens. |
 | `--fail-on not_executable` | Hard gate. Use in CI and in manual runs where blocking matters. |
 | `--severity-threshold warn` | When info-level chatter is drowning out signal in a large plan. |
 | `--model <id>` | Only when the user explicitly overrides. Default model is fine. |
+| `--baseline <path>` | On every re-run after a revision. Marks findings new, persisting, or resolved. |
 | `--seed <int>` | When reproducing a previous run for comparison. |
 | `--debug` | Only when troubleshooting a suspected redaction or prompt issue. |
 

@@ -2,7 +2,7 @@
 
 A [Claude Code](https://claude.com/claude-code) skill that teaches Claude when and how to run `plancritic` against a `PLAN.md` before code generation begins.
 
-Once installed, Claude will invoke plancritic with the right flags, grounding context, and profile; parse the JSON result; and report the verdict, critical issues, open questions, and suggested patches in a structured form.
+Once installed, Claude will invoke plancritic with the right flags, grounding context, and profile; read the result in compact form; and report the verdict, critical issues, open questions, and spec coverage gaps in a structured form.
 
 ## Install
 
@@ -34,8 +34,8 @@ Trigger the skill by asking Claude to review, validate, critique, or check a pla
 Claude will:
 
 1. Select a profile from repo signals (`go-backend`, `react-frontend`, `aws-deploy`, or `general`).
-2. Pass `SPEC.md` and a repo tree as `--context` when available.
-3. Run `plancritic check` with `--format json --out /tmp/plancritic.json --patch-out /tmp/plancritic.patch --fail-on not_executable`.
+2. Pass `SPEC.md` with `--spec` and a repo tree with `--context` when available.
+3. Run `plancritic check` with `--spec SPEC.md --format json --out /tmp/plancritic.json --quiet --fail-on not_executable`, then repeat it with `--format compact` to read the result (a free cache hit).
 4. Report verdict, score, and issues grouped by severity and category.
 5. Halt on `NOT_EXECUTABLE`; wait for answers on `EXECUTABLE_WITH_CLARIFICATIONS`; green-light on `EXECUTABLE_AS_IS`.
 
