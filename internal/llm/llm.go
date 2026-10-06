@@ -4,6 +4,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -187,4 +188,91 @@ func SanitizeJSON(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// TruncatedError reports that the model stopped because it hit the
+// output token cap. Partial holds whatever text was produced so the
+// caller can try to salvage it (see SalvageJSON) instead of discarding
+// the whole, already-billed response.
+type TruncatedError struct {
+	Provider  string
+	MaxTokens int
+	Partial   string
+}
+
+func (e *TruncatedError) Error() string {
+	return fmt.Sprintf("%s: response truncated (hit max_tokens=%d)", e.Provider, e.MaxTokens)
+}
+
+// SalvageJSON recovers a parseable document from JSON that was cut off
+// mid-stream. It keeps the longest prefix that ends where an object or
+// array closes as an element of a top-level array (a whole issue or
+// question) or as a top-level member, then closes every container
+// still open. Boundaries after scalar values are deliberately not
+// tracked: in plancritic's output shape every top-level member and
+// every element of a top-level array is an object or an array, so a
+// scalar boundary could never be the best cut. Already-valid input is
+// returned unchanged. The second result is false when no usable prefix
+// exists (for example, the cut fell inside the first element).
+func SalvageJSON(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if json.Valid([]byte(s)) {
+		return s, true
+	}
+
+	type cut struct {
+		pos   int
+		stack string
+	}
+	var cuts []cut
+	var stack []byte
+	inStr, esc := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{', '[':
+			stack = append(stack, c)
+		case '}', ']':
+			if len(stack) == 0 {
+				return "", false
+			}
+			stack = stack[:len(stack)-1]
+			// A boundary worth cutting at: an element of a top-level
+			// array just closed (stack is "{[" for an array member of a
+			// root object, "[" for a root array) or a top-level member
+			// value just closed (stack is "{").
+			if st := string(stack); st == "{[" || st == "{" || st == "[" {
+				cuts = append(cuts, cut{pos: i + 1, stack: st})
+			}
+		}
+	}
+
+	for n := len(cuts) - 1; n >= 0; n-- {
+		var b strings.Builder
+		b.WriteString(s[:cuts[n].pos])
+		for j := len(cuts[n].stack) - 1; j >= 0; j-- {
+			if cuts[n].stack[j] == '{' {
+				b.WriteByte('}')
+			} else {
+				b.WriteByte(']')
+			}
+		}
+		if candidate := b.String(); json.Valid([]byte(candidate)) {
+			return candidate, true
+		}
+	}
+	return "", false
 }

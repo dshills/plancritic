@@ -18,6 +18,14 @@ import (
 func AutoFix(r *review.Review, planLineCount int, contextLineCounts map[string]int) []string {
 	var fixes []string
 
+	// The verdict is recomputed from the issues after validation, so the
+	// model's value is never used. A missing one (typically because the
+	// output was truncated before the summary) must not cost a repair.
+	if !r.Summary.Verdict.Valid() {
+		fixes = append(fixes, fmt.Sprintf("summary.verdict: %q replaced with a placeholder (the verdict is computed from the issues)", r.Summary.Verdict))
+		r.Summary.Verdict = review.VerdictWithClarifications
+	}
+
 	issueIDs := make([]*string, len(r.Issues))
 	for i := range r.Issues {
 		issueIDs[i] = &r.Issues[i].ID

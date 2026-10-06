@@ -135,7 +135,7 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 	}
 
 	if result.StopReason == "max_tokens" {
-		return out.String(), usage, fmt.Errorf("anthropic: response truncated (hit max_tokens=%d)", maxTokens)
+		return out.String(), usage, &TruncatedError{Provider: "anthropic", MaxTokens: maxTokens, Partial: out.String()}
 	}
 	if out.Len() == 0 {
 		return "", usage, fmt.Errorf("anthropic: no text content in response")

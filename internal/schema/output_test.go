@@ -146,6 +146,7 @@ func ev(src, path string, start, end int) review.Evidence {
 
 func TestAutoFixRenumbersEmptyAndDuplicateIDs(t *testing.T) {
 	r := &review.Review{
+		Summary: review.Summary{Verdict: review.VerdictExecutable},
 		Issues: []review.Issue{
 			{ID: "ISSUE-0001", Evidence: []review.Evidence{ev("plan", "p", 1, 1)}},
 			{ID: "ISSUE-0001", Evidence: []review.Evidence{ev("plan", "p", 1, 1)}},
@@ -202,7 +203,7 @@ func TestAutoFixEvidenceRanges(t *testing.T) {
 }
 
 func TestAutoFixNoopOnValidReview(t *testing.T) {
-	r := &review.Review{Issues: []review.Issue{{ID: "ISSUE-0001", Evidence: []review.Evidence{ev("plan", "p", 2, 4)}}}}
+	r := &review.Review{Summary: review.Summary{Verdict: review.VerdictExecutable}, Issues: []review.Issue{{ID: "ISSUE-0001", Evidence: []review.Evidence{ev("plan", "p", 2, 4)}}}}
 	if fixes := AutoFix(r, 10, nil); len(fixes) != 0 {
 		t.Errorf("expected no fixes, got %v", fixes)
 	}
@@ -234,6 +235,7 @@ func TestOffendingItems(t *testing.T) {
 
 func TestAutoFixDoesNotStealLaterValidIDs(t *testing.T) {
 	r := &review.Review{
+		Summary: review.Summary{Verdict: review.VerdictExecutable},
 		Issues: []review.Issue{
 			{ID: "", Evidence: []review.Evidence{ev("plan", "p", 1, 1)}},
 			{ID: "ISSUE-0001", Evidence: []review.Evidence{ev("plan", "p", 1, 1)}},
@@ -248,5 +250,24 @@ func TestAutoFixDoesNotStealLaterValidIDs(t *testing.T) {
 	}
 	if len(fixes) != 2 {
 		t.Errorf("expected exactly 2 fixes, got %v", fixes)
+	}
+}
+
+func TestAutoFixFillsMissingVerdict(t *testing.T) {
+	r := &review.Review{Issues: []review.Issue{{ID: "ISSUE-0001", Severity: review.SeverityWarn, Category: review.CategoryAmbiguity, Title: "t", Description: "d", Evidence: []review.Evidence{ev("plan", "p", 1, 1)}}}}
+	fixes := AutoFix(r, 10, nil)
+	if !r.Summary.Verdict.Valid() {
+		t.Errorf("verdict should be filled, got %q", r.Summary.Verdict)
+	}
+	if len(fixes) != 1 || !strings.Contains(fixes[0], "summary.verdict") {
+		t.Errorf("expected one verdict fix, got %v", fixes)
+	}
+	if errs := Validate(r, 10, nil); len(errs) != 0 {
+		t.Errorf("review should validate after AutoFix, got %v", errs)
+	}
+	r.Summary.Verdict = "MAYBE"
+	AutoFix(r, 10, nil)
+	if r.Summary.Verdict != review.VerdictWithClarifications {
+		t.Errorf("invalid verdict should be replaced, got %q", r.Summary.Verdict)
 	}
 }

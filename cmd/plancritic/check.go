@@ -69,7 +69,7 @@ func newCheckCmd() *cobra.Command {
 	flags.BoolVar(&f.strict, "strict", envBool("PLANCRITIC_STRICT", false), "Enable strict grounding mode")
 	flags.StringVar(&f.providerName, "provider", envStr("PLANCRITIC_PROVIDER", ""), "LLM provider: anthropic, openai, or gemini")
 	flags.StringVar(&f.model, "model", envStr("PLANCRITIC_MODEL", ""), "Model ID (e.g., claude-sonnet-4-6, gpt-5.2)")
-	flags.IntVar(&f.maxTokens, "max-tokens", envInt("PLANCRITIC_MAX_TOKENS", 4096), "Max response tokens")
+	flags.IntVar(&f.maxTokens, "max-tokens", envInt("PLANCRITIC_MAX_TOKENS", 16384), "Max response tokens (a truncated response is salvaged and flagged rather than failed)")
 	flags.IntVar(&f.maxIssues, "max-issues", envInt("PLANCRITIC_MAX_ISSUES", 50), "Max issues to return")
 	flags.IntVar(&f.maxQuestions, "max-questions", envInt("PLANCRITIC_MAX_QUESTIONS", 20), "Max questions to return")
 	flags.IntVar(&f.maxInputTokens, "max-input-tokens", envInt("PLANCRITIC_MAX_INPUT_TOKENS", 0), "Max estimated input tokens (0=unlimited)")

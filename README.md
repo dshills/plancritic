@@ -113,7 +113,7 @@ Common overrides:
 | `--profile <name>` | `general` | Built-in checklist profile |
 | `--strict` | false | Strict grounding mode (see below) |
 | `--model <id>` | — | Model override |
-| `--max-tokens <n>` | 4096 | Cap LLM response size |
+| `--max-tokens <n>` | 16384 | Cap LLM response size; a response that hits the cap is salvaged and flagged (`meta.truncated`) rather than failed |
 | `--temperature <float>` | 0.2 | LLM temperature |
 | `--seed <int>` | — | Seed for reproducibility (if supported) |
 | `--severity-threshold` | `info` | Minimum severity included in output |

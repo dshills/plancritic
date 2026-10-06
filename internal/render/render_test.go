@@ -22,7 +22,7 @@ func sampleReview() *review.Review {
 			{
 				ID: "ISSUE-0001", Severity: review.SeverityCritical,
 				Category: review.CategoryContradiction,
-				Title: "Dependency contradiction", Description: "Plan contradicts itself.",
+				Title:    "Dependency contradiction", Description: "Plan contradicts itself.",
 				Evidence: []review.Evidence{
 					{Source: "plan", Path: "plan.md", LineStart: 5, LineEnd: 7, Quote: "no deps"},
 				},
@@ -31,7 +31,7 @@ func sampleReview() *review.Review {
 			{
 				ID: "ISSUE-0002", Severity: review.SeverityWarn,
 				Category: review.CategoryAmbiguity,
-				Title: "Vague performance", Description: "No latency target.",
+				Title:    "Vague performance", Description: "No latency target.",
 				Evidence: []review.Evidence{
 					{Source: "plan", Path: "plan.md", LineStart: 20, LineEnd: 22, Quote: "make it fast"},
 				},
@@ -40,7 +40,7 @@ func sampleReview() *review.Review {
 			{
 				ID: "ISSUE-0003", Severity: review.SeverityInfo,
 				Category: review.CategoryTestGap,
-				Title: "Missing edge case", Description: "No empty input test.",
+				Title:    "Missing edge case", Description: "No empty input test.",
 				Evidence: []review.Evidence{
 					{Source: "plan", Path: "plan.md", LineStart: 30, LineEnd: 30, Quote: "test it"},
 				},

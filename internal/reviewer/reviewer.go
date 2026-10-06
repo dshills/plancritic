@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -294,8 +295,28 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	} else {
 		result, usage, err = modelProvider.Generate(ctx, promptText, settings)
 	}
+	truncated := false
+	truncatedAt := 0
 	if err != nil {
-		return review.Review{}, Errorf(4, "LLM call failed: %v", err)
+		var te *llm.TruncatedError
+		if !errors.As(err, &te) {
+			return review.Review{}, Errorf(4, "LLM call failed: %v", err)
+		}
+		// The model hit its output cap. The input was already billed and
+		// every complete finding emitted so far is still good, so salvage
+		// the parseable prefix rather than throwing the run away.
+		partial := te.Partial
+		if partial == "" {
+			partial = result
+		}
+		salvaged, ok := llm.SalvageJSON(llm.ExtractJSON(partial))
+		if !ok {
+			return review.Review{}, Errorf(4, "LLM output truncated at max_tokens=%d and nothing complete could be salvaged; raise --max-tokens", te.MaxTokens)
+		}
+		verbose("LLM output truncated at max_tokens=%d; salvaged %d of %d bytes", te.MaxTokens, len(salvaged), len(partial))
+		result = salvaged
+		truncated = true
+		truncatedAt = te.MaxTokens
 	}
 	verbose("Received LLM response (%d bytes)", len(result))
 	if usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 {
@@ -391,6 +412,9 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	}
 
 	// 11. Post-process
+	if truncated {
+		rev.Issues = append(rev.Issues, truncationNotice(truncatedAt, filepath.Base(p.FilePath), p.Lines))
+	}
 	review.SortIssues(rev.Issues)
 	review.SortQuestions(rev.Questions)
 
@@ -407,13 +431,43 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	// Persist the validated, sorted, grounding-checked review before the
 	// output-only filters run (see finalize). Write failures are logged,
 	// never fatal: the cache is an optimization.
-	if resultStore != nil {
+	// A truncated review is incomplete by definition; never serve it
+	// from cache.
+	if resultStore != nil && !truncated {
 		if err := resultStore.Put(resultKey, rev); err != nil {
 			verbose("Result cache write failed: %v", err)
 		}
 	}
 
-	return finalize(rev, false), nil
+	out := finalize(rev, false)
+	out.Meta.Truncated = truncated
+	return out, nil
+}
+
+// truncationNotice is appended to the issues when the model hit its
+// output cap, so the incompleteness is visible in the findings
+// themselves and not only in meta.truncated. The output schema requires
+// at least one evidence entry, so the notice cites a real location (the
+// plan's first line, quoted verbatim) and is tagged "system" so readers
+// can tell it is about the run, not about the plan text it cites.
+func truncationNotice(maxTokens int, planName string, planLines []string) review.Issue {
+	firstLine := ""
+	if len(planLines) > 0 {
+		firstLine = planLines[0]
+	}
+	return review.Issue{
+		ID:             "ISSUE-TRUNC-OUTPUT",
+		Severity:       review.SeverityWarn,
+		Category:       review.CategoryAmbiguity,
+		Title:          "Model output truncated",
+		Description:    fmt.Sprintf("The model hit its output cap (max_tokens=%d) before finishing. The findings listed are complete in themselves; any findings it had not yet emitted are missing. This is a notice about the run, not a defect at the cited line.", maxTokens),
+		Impact:         "The review may understate the number and severity of issues.",
+		Recommendation: "Re-run with a higher --max-tokens.",
+		Evidence: []review.Evidence{
+			{Source: "plan", Path: planName, LineStart: 1, LineEnd: 1, Quote: firstLine},
+		},
+		Tags: []string{"system", "truncated"},
+	}
 }
 
 type Error struct {

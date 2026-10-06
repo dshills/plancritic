@@ -100,4 +100,7 @@ type Meta struct {
 	// Cached is true when the review was served from the local result
 	// cache rather than a fresh provider call.
 	Cached bool `json:"cached,omitempty"`
+	// Truncated is true when the model hit its output cap and the review
+	// was salvaged from the complete prefix; findings may be missing.
+	Truncated bool `json:"truncated,omitempty"`
 }

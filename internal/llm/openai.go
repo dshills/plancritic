@@ -107,7 +107,7 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 
 	choice := result.Choices[0]
 	if choice.FinishReason == "length" {
-		return choice.Message.Content, usage, fmt.Errorf("openai: response truncated (hit max_completion_tokens=%d)", maxTokens)
+		return choice.Message.Content, usage, &TruncatedError{Provider: "openai", MaxTokens: maxTokens, Partial: choice.Message.Content}
 	}
 
 	return choice.Message.Content, usage, nil

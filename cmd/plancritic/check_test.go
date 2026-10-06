@@ -959,17 +959,22 @@ func TestRunCheckDeltaRepairShortResponseIsSchemaError(t *testing.T) {
 	assertExitCode(t, err, 5)
 }
 
-func TestRunCheckFullRepairWhenErrorOutsideItems(t *testing.T) {
-	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+func TestRunCheckInvalidVerdictIsFixedLocally(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	// The model's verdict is never used (it is recomputed from the
+	// issues), so an invalid one must not cost a repair round trip.
 	first := `{"summary":{"verdict":"MAYBE"},"issues":[],"questions":[]}`
-	mock := &callCountMockProvider{responses: []string{first, validMockResponse()}}
+	mock := &callCountMockProvider{responses: []string{first}}
 	f := cacheTestFlags(t, nil)
 	f.provider = mock
 	if err := runCheck(context.Background(), planPath, f); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(mock.prompts[1], "## Original Output") {
-		t.Error("an error outside indexed items should fall back to the whole-output repair prompt")
+	if mock.callIdx != 1 {
+		t.Errorf("expected no repair call, got %d calls", mock.callIdx)
+	}
+	if rev := readReview(t, f.out); rev.Summary.Verdict != review.VerdictExecutable {
+		t.Errorf("verdict should be recomputed from the (empty) issues, got %s", rev.Summary.Verdict)
 	}
 }
 
@@ -1008,26 +1013,26 @@ func TestRunCheckDeltaRepairSendsSourcesForEvidenceErrors(t *testing.T) {
 	}
 }
 
-func TestRunCheckFullRepairSendsAutoFixedOutput(t *testing.T) {
+func TestRunCheckVerdictAndIDsFixedTogetherWithoutRepair(t *testing.T) {
 	planPath := writeTempPlan(t, "# Plan\n1. Step A")
-	// Invalid verdict forces a full repair; the duplicate ID is auto-fixed
-	// first and the repair prompt must show the fixed IDs.
 	first := `{"summary":{"verdict":"MAYBE"},"issues":[
 	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"a","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]},
 	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"b","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
 	],"questions":[]}`
-	mock := &callCountMockProvider{responses: []string{first, validMockResponse()}}
+	mock := &callCountMockProvider{responses: []string{first}}
 	f := cacheTestFlags(t, nil)
 	f.provider = mock
 	if err := runCheck(context.Background(), planPath, f); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(mock.prompts[1], `"ISSUE-0002"`) {
-		t.Error("full repair should send the auto-fixed review, not the raw output")
+	if mock.callIdx != 1 {
+		t.Errorf("all defects were mechanical; expected no repair call, got %d calls", mock.callIdx)
+	}
+	rev := readReview(t, f.out)
+	if len(rev.Issues) != 2 || rev.Issues[0].ID == rev.Issues[1].ID {
+		t.Errorf("expected two issues with distinct IDs, got %+v", rev.Issues)
 	}
 }
-
-// --- opt-in patches and checklists (output shape) ---
 
 func TestRunCheckPatchesAndChecklistsAreOptIn(t *testing.T) {
 	planPath := writeTempPlan(t, "# Plan\n1. Step A")
@@ -1065,5 +1070,97 @@ func TestRunCheckPatchesAndChecklistsAreOptIn(t *testing.T) {
 	}
 	if !strings.Contains(schema, `"patches"`) || !strings.Contains(schema, `"checklists"`) {
 		t.Error("shaped structured-output schema should request patches and checklists")
+	}
+}
+
+// --- truncated output salvage ---
+
+func TestRunCheckSalvagesTruncatedOutput(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	partial := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[` +
+		`{"id":"ISSUE-0001","severity":"CRITICAL","category":"CONTRADICTION","title":"Complete one","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}],"impact":"i","recommendation":"r","blocking":true},` +
+		`{"id":"ISSUE-0002","severity":"WARN","category":"AMBIGUITY","title":"Cut off mid`
+	mock := &llm.MockProvider{Response: partial, Err: &llm.TruncatedError{Provider: "mock", MaxTokens: 123, Partial: partial}}
+
+	f := cacheTestFlags(t, mock)
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatalf("truncated output with a complete issue should be salvaged, got %v", err)
+	}
+	rev := readReview(t, f.out)
+	if !rev.Meta.Truncated {
+		t.Error("meta.truncated should be set")
+	}
+	titles := map[string]bool{}
+	for _, iss := range rev.Issues {
+		titles[iss.Title] = true
+	}
+	if !titles["Complete one"] || !titles["Model output truncated"] || titles["Cut off mid"] {
+		t.Errorf("expected the complete issue plus a truncation notice, got %v", titles)
+	}
+	if rev.Summary.Verdict != review.VerdictNotExecutable {
+		t.Errorf("verdict should still reflect the salvaged blocking critical, got %s", rev.Summary.Verdict)
+	}
+	for _, iss := range rev.Issues {
+		if iss.Title != "Model output truncated" {
+			continue
+		}
+		ev := iss.Evidence[0]
+		if ev.Path != "plan.md" || ev.LineStart != 1 || ev.Quote != "# Plan" {
+			t.Errorf("truncation notice should cite the real first line of the plan, got %+v", ev)
+		}
+		if !strings.Contains(strings.Join(iss.Tags, ","), "system") {
+			t.Errorf("truncation notice should be tagged system, got %v", iss.Tags)
+		}
+	}
+
+	// A salvaged review must not be served from cache next time.
+	f2 := cacheTestFlags(t, mock)
+	if err := runCheck(context.Background(), planPath, f2); err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 2 {
+		t.Errorf("truncated result should not be cached, provider calls = %d", mock.Calls)
+	}
+}
+
+func TestRunCheckUnsalvageableTruncationIsProviderError(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	partial := `{"summary":{"verdict":"EXEC`
+	mock := &llm.MockProvider{Response: partial, Err: &llm.TruncatedError{Provider: "mock", MaxTokens: 50, Partial: partial}}
+	err := runCheck(context.Background(), planPath, cacheTestFlags(t, mock))
+	assertExitCode(t, err, 4)
+	if !strings.Contains(err.Error(), "--max-tokens") {
+		t.Errorf("error should point at --max-tokens, got: %v", err)
+	}
+}
+
+func TestMaxTokensDefault(t *testing.T) {
+	t.Setenv("PLANCRITIC_MAX_TOKENS", "")
+	cmd := newCheckCmd()
+	if got := cmd.Flags().Lookup("max-tokens").DefValue; got != "16384" {
+		t.Errorf("--max-tokens default = %s, want 16384", got)
+	}
+}
+
+func TestRunCheckRepairRaisesSmallMaxTokens(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	first := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"BOGUS","category":"AMBIGUITY","title":"x","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
+	],"questions":[]}`
+	repair := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"x","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
+	],"questions":[],"patches":[],"checklists":[]}`
+	mock := &callCountMockProvider{responses: []string{first, repair}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.maxTokens = 500
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if got := mock.settings[0].MaxTokens; got != 500 {
+		t.Errorf("original call should keep the user's cap, got %d", got)
+	}
+	if got := mock.settings[1].MaxTokens; got < 8192 {
+		t.Errorf("repair call should get at least 8192 output tokens, got %d", got)
 	}
 }

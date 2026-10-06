@@ -70,9 +70,9 @@ type CheckOptions struct {
 	// grade of every profile checklist item. Both default to off.
 	Patches    bool
 	Checklists bool
-	Verbose        bool
-	Debug          bool
-	DebugDir       string
+	Verbose    bool
+	Debug      bool
+	DebugDir   string
 }
 
 type CheckResult struct {
@@ -89,7 +89,7 @@ func DefaultCheckOptions() CheckOptions {
 	return CheckOptions{
 		Version:           "api",
 		ProfileName:       "general",
-		MaxTokens:         4096,
+		MaxTokens:         16384,
 		MaxIssues:         50,
 		MaxQuestions:      20,
 		Timeout:           "5m",

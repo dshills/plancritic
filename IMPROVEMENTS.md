@@ -131,6 +131,15 @@ tokens dominate latency, so this is also the cheapest speed win available.
 
 ### 5. Fix the max-tokens default and salvage truncated responses  — Accuracy, Tokens
 
+**Status: done.** The CLI, SDK facade, and web UI default `--max-tokens` to 16384
+(the provider default). Providers now return `llm.TruncatedError` carrying the partial
+text; the reviewer salvages the longest prefix ending at a complete issue or question
+(`llm.SalvageJSON`), runs the normal validate/repair path on it, appends a WARN
+"Model output truncated" issue, sets `meta.truncated: true`, and never caches the
+result. Only when nothing complete can be recovered does the run fail (exit 4, with a
+message pointing at `--max-tokens`). Telling the model about the severity threshold
+is deferred to item 9 because it would put the threshold into the result-cache key.
+
 **Evidence:** `cmd/plancritic/check.go` defaults `--max-tokens` to 4096 while the providers
 default to 16384 when unset. A 500-line plan with 30 issues plus questions, checklists, and
 patches comfortably exceeds 4096 output tokens. When that happens every provider returns a

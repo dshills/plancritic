@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1403,4 +1404,97 @@ func TestGeminiRetriesWithoutSchemaWhenRejected(t *testing.T) {
 	if gc := bodies[1]["generationConfig"].(map[string]any); gc["responseJsonSchema"] != nil {
 		t.Errorf("retry should drop responseJsonSchema: %v", gc)
 	}
+}
+
+// --- truncation salvage ---
+
+func TestSalvageJSON(t *testing.T) {
+	issue := func(id string) string {
+		return `{"id":"` + id + `","severity":"WARN","category":"AMBIGUITY","title":"t","description":"d","evidence":[{"source":"plan","path":"p","line_start":1,"line_end":1}],"impact":"i","recommendation":"r","blocking":false,"tags":[]}`
+	}
+	full := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[` + issue("ISSUE-0001") + `,` + issue("ISSUE-0002") + `]}`
+
+	tests := []struct {
+		name       string
+		in         string
+		wantOK     bool
+		wantIssues int
+	}{
+		{"already valid", full, true, 2},
+		{"cut mid second issue", `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[` + issue("ISSUE-0001") + `,{"id":"ISSUE-0002","sev`, true, 1},
+		{"cut right after comma", `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[` + issue("ISSUE-0001") + `,`, true, 1},
+		{"cut inside a string with escaped quote", `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[` + issue("ISSUE-0001") + `,{"id":"ISSUE-0002","title":"say \"hi\" and then`, true, 1},
+		{"cut after questions, before issues", `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[{"id":"ISSUE-00`, true, 0},
+		{"cut inside summary", `{"summary":{"verdict":"EXECUTABLE_AS`, false, 0},
+		{"summary last and cut off", `{"issues":[` + issue("ISSUE-0001") + `],"questions":[],"summary":{"verd`, true, 1},
+		{"garbage", `not json`, false, 0},
+		{"empty", ``, false, 0},
+		{"unbalanced close", `]}`, false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := SalvageJSON(tt.in)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v (got %q)", ok, tt.wantOK, got)
+			}
+			if !ok {
+				return
+			}
+			var doc struct {
+				Issues []map[string]any `json:"issues"`
+			}
+			if err := json.Unmarshal([]byte(got), &doc); err != nil {
+				t.Fatalf("salvaged output is not valid JSON: %v\n%s", err, got)
+			}
+			if len(doc.Issues) != tt.wantIssues {
+				t.Errorf("salvaged %d issues, want %d:\n%s", len(doc.Issues), tt.wantIssues, got)
+			}
+		})
+	}
+}
+
+func TestSalvageJSONRootArray(t *testing.T) {
+	got, ok := SalvageJSON(`[{"id":1},{"id":`)
+	if !ok || got != `[{"id":1}]` {
+		t.Errorf("root array should be salvaged to [{\"id\":1}], got ok=%v %q", ok, got)
+	}
+}
+
+func TestProvidersReturnTypedTruncationError(t *testing.T) {
+	t.Run("anthropic", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(anthropicResponse{Content: []anthropicContentBlock{{Type: "text", Text: `{"partial`}}, StopReason: "max_tokens"})
+		}))
+		defer srv.Close()
+		p := &AnthropicProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+		_, _, err := p.Generate(context.Background(), "x", Settings{MaxTokens: 7})
+		var te *TruncatedError
+		if !errors.As(err, &te) || te.Partial != `{"partial` || te.MaxTokens != 7 {
+			t.Errorf("want TruncatedError with partial text, got %#v", err)
+		}
+	})
+	t.Run("openai", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(openaiResponse{Choices: []openaiChoice{{Message: openaiMessage{Content: `{"partial`}, FinishReason: "length"}}})
+		}))
+		defer srv.Close()
+		p := &OpenAIProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+		_, _, err := p.Generate(context.Background(), "x", Settings{MaxTokens: 7})
+		var te *TruncatedError
+		if !errors.As(err, &te) || te.Partial != `{"partial` {
+			t.Errorf("want TruncatedError with partial text, got %#v", err)
+		}
+	})
+	t.Run("gemini", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(geminiResponse{Candidates: []geminiCandidate{{Content: geminiContent{Parts: []geminiPart{{Text: `{"partial`}}}, FinishReason: "MAX_TOKENS"}}})
+		}))
+		defer srv.Close()
+		p := &GeminiProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+		_, _, err := p.Generate(context.Background(), "x", Settings{MaxTokens: 7})
+		var te *TruncatedError
+		if !errors.As(err, &te) || te.Partial != `{"partial` {
+			t.Errorf("want TruncatedError with partial text, got %#v", err)
+		}
+	})
 }

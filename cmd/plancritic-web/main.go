@@ -60,7 +60,7 @@ func newServeCmd() *cobra.Command {
 	f.ProfileName = serveEnvStr("PLANCRITIC_PROFILE", "general")
 	f.ProviderName = serveEnvStr("PLANCRITIC_PROVIDER", "")
 	f.Model = serveEnvStr("PLANCRITIC_MODEL", "")
-	f.MaxTokens = serveEnvInt("PLANCRITIC_MAX_TOKENS", 4096)
+	f.MaxTokens = serveEnvInt("PLANCRITIC_MAX_TOKENS", 16384)
 	f.MaxIssues = serveEnvInt("PLANCRITIC_MAX_ISSUES", 50)
 	f.MaxQuestions = serveEnvInt("PLANCRITIC_MAX_QUESTIONS", 20)
 	f.MaxInputTokens = serveEnvInt("PLANCRITIC_MAX_INPUT_TOKENS", 0)

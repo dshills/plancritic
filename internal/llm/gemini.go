@@ -152,7 +152,7 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 		out.WriteString(part.Text)
 	}
 	if candidate.FinishReason == "MAX_TOKENS" {
-		return out.String(), usage, fmt.Errorf("gemini: response truncated (hit maxOutputTokens=%d)", maxTokens)
+		return out.String(), usage, &TruncatedError{Provider: "gemini", MaxTokens: maxTokens, Partial: out.String()}
 	}
 	if out.Len() == 0 {
 		return "", usage, fmt.Errorf("gemini: no text content in response")

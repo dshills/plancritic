@@ -13,6 +13,10 @@ import (
 	"github.com/dshills/plancritic/internal/schema"
 )
 
+// repairMinMaxTokens is the smallest output cap a repair call is made
+// with, regardless of the user's --max-tokens.
+const repairMinMaxTokens = 8192
+
 // repairBounds carries the citation limits a repair must respect.
 type repairBounds struct {
 	PlanName          string
@@ -72,6 +76,12 @@ func repairReview(
 		promptText = prompt.BuildRepair(string(current), errs, bounds.Shape)
 	}
 
+	// A repair must be able to finish. When the original cap was small
+	// (or was what truncated the original response), give the repair
+	// room; its output is a handful of items at most.
+	if settings.MaxTokens > 0 && settings.MaxTokens < repairMinMaxTokens {
+		settings.MaxTokens = repairMinMaxTokens
+	}
 	out, usage, err := provider.Generate(ctx, promptText, settings)
 	if err != nil {
 		return review.Review{}, Errorf(4, "repair LLM call failed: %v", err)
