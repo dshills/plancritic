@@ -339,8 +339,10 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			// Key on the model the provider will actually use, not the
 			// (possibly empty) requested string, so a provider default
 			// change can never serve a review produced by another model.
+			// "v2": entries written before degenerate (empty) responses
+			// were excluded may hold such a response; never serve them.
 			resultKey = resultcache.Key(
-				"v1",
+				"v2",
 				version,
 				modelProvider.Name(),
 				llm.EffectiveModel(modelProvider, requestModel),
@@ -389,74 +391,10 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		}
 	}
 
-	var result string
-	var usage llm.Usage
-	calls := 0
-	if sp, ok := modelProvider.(llm.SegmentedProvider); ok {
-		result, usage, err = sp.GenerateSegments(ctx, promptSegments, settings)
-	} else {
-		result, usage, err = modelProvider.Generate(ctx, promptText, settings)
-	}
-	calls++
-	truncated := false
-	truncatedAt := 0
-	if err != nil {
-		var te *llm.TruncatedError
-		if !errors.As(err, &te) {
-			return review.Review{}, Errorf(4, "LLM call failed: %v", err)
-		}
-		// The model hit its output cap. The input was already billed and
-		// every complete finding emitted so far is still good, so salvage
-		// the parseable prefix rather than throwing the run away.
-		partial := te.Partial
-		if partial == "" {
-			partial = result
-		}
-		salvaged, ok := llm.SalvageJSON(llm.ExtractJSON(partial))
-		if !ok {
-			return review.Review{}, Errorf(4, "LLM output truncated at max_tokens=%d and nothing complete could be salvaged; raise --max-tokens", te.MaxTokens)
-		}
-		verbose("LLM output truncated at max_tokens=%d; salvaged %d of %d bytes", te.MaxTokens, len(salvaged), len(partial))
-		result = salvaged
-		truncated = true
-		truncatedAt = te.MaxTokens
-	}
-	verbose("Received LLM response (%d bytes)", len(result))
-	if usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 {
-		verbose("Token usage: input=%d (cache read=%d, cache write=%d), output=%d",
-			usage.InputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens, usage.OutputTokens)
-	} else if usage.InputTokens > 0 {
-		verbose("Token usage: input=%d, output=%d", usage.InputTokens, usage.OutputTokens)
-	}
-
-	if f.Debug {
-		debugRespPath, err := writeDebugFile(f.DebugDir, "plancritic-debug-response-*.txt", []byte(result))
-		if err != nil {
-			verbose("Warning: failed to write debug response: %v", err)
-		} else {
-			verbose("Wrote debug response to %s", debugRespPath)
-		}
-	}
-
-	// 9. Parse JSON
-	result = llm.ExtractJSON(result)
-	var rev review.Review
-	if err := json.Unmarshal([]byte(result), &rev); err != nil {
-		// Try sanitizing invalid escape sequences (common with Gemini).
-		// Use a fresh Review so partial fields from the failed unmarshal
-		// don't bleed into the retry result.
-		sanitized := llm.SanitizeJSON(result)
-		var rev2 review.Review
-		if err2 := json.Unmarshal([]byte(sanitized), &rev2); err2 != nil {
-			return review.Review{}, Errorf(5, "failed to parse LLM response as JSON: %v (pre-sanitize: %v)", err2, err)
-		}
-		rev = rev2
-		verbose("Sanitized invalid JSON escape sequences")
-	}
-
-	// 10. Validate. Build context lookup maps in a single pass; both
-	// maps are keyed by basename, matching the identifier the prompt
-	// exposes to the LLM (see prompt.BuildSegments).
+	// 9. Build context lookup maps in a single pass, once, so the
+	// duplicate-basename warning is not repeated if the call is retried.
+	// Both maps are keyed by basename, matching the identifier the
+	// prompt exposes to the LLM (see prompt.BuildSegments).
 	// Use review.NormalizeContextPath so the map keys match exactly
 	// what schema.Validate and review.ReconstructQuotes will compute
 	// from Evidence.Path, regardless of the host OS or whether the
@@ -474,41 +412,150 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		contextLineCounts[base] = len(c.Lines)
 		contextLinesByBase[base] = c.Lines
 	}
-	validationErrs := schema.Validate(&rev, len(p.Lines), contextLineCounts)
-	if shape.Coverage && rev.Coverage == nil {
-		// Validate cannot know a spec was supplied; a missing matrix must
-		// go through repair rather than be mistaken for "no requirements".
-		validationErrs = append(validationErrs, schema.ValidationError{Path: "coverage", Message: "required when a specification is provided"})
-	}
-	if len(validationErrs) > 0 {
-		// 10a. Mechanical defects (empty or duplicate IDs, inverted or
-		// overlong line ranges) are fixed locally; they need no model.
-		if fixes := schema.AutoFix(&rev, len(p.Lines), contextLineCounts); len(fixes) > 0 {
-			for _, fx := range fixes {
-				verbose("Auto-fixed %s", fx)
-			}
-			validationErrs = schema.Validate(&rev, len(p.Lines), contextLineCounts)
+	var usage llm.Usage
+	calls := 0
+	// generate makes one model call and brings its answer to a
+	// schema-valid review: parse, fix mechanical defects locally, then
+	// (if still invalid) one repair call. Token usage and call counts
+	// accumulate across invocations; it runs a second time only when the
+	// first answer is degenerate (see isDegenerate).
+	generate := func() (review.Review, bool, int, error) {
+		var result string
+		var callUsage llm.Usage
+		var err error
+		if sp, ok := modelProvider.(llm.SegmentedProvider); ok {
+			result, callUsage, err = sp.GenerateSegments(ctx, promptSegments, settings)
+		} else {
+			result, callUsage, err = modelProvider.Generate(ctx, promptText, settings)
 		}
-	}
-	if len(validationErrs) > 0 {
-		// 10b. Whatever remains needs the model. Only the offending items
-		// are resent when every error is attributable to one.
-		verbose("Validation failed (%d errors), attempting repair...", len(validationErrs))
-		repaired, repairUsage, err := repairReview(ctx, modelProvider, settings, rev, validationErrs, repairBounds{
-			PlanName:          filepath.Base(p.FilePath),
-			PlanLines:         len(p.Lines),
-			ContextLineCounts: contextLineCounts,
-			Sources:           prompt.RenderSources(p, contexts),
-			Shape:             shape,
-		}, verbose)
 		calls++
-		usage = addUsage(usage, repairUsage)
+		usage = addUsage(usage, callUsage)
+		truncated := false
+		truncatedAt := 0
 		if err != nil {
-			return review.Review{}, err
+			var te *llm.TruncatedError
+			if !errors.As(err, &te) {
+				return review.Review{}, false, 0, Errorf(4, "LLM call failed: %v", err)
+			}
+			// The model hit its output cap. The input was already billed and
+			// every complete finding emitted so far is still good, so salvage
+			// the parseable prefix rather than throwing the run away.
+			partial := te.Partial
+			if partial == "" {
+				partial = result
+			}
+			salvaged, ok := llm.SalvageJSON(llm.ExtractJSON(partial))
+			if !ok {
+				return review.Review{}, false, 0, Errorf(4, "LLM output truncated at max_tokens=%d and nothing complete could be salvaged; raise --max-tokens", te.MaxTokens)
+			}
+			verbose("LLM output truncated at max_tokens=%d; salvaged %d of %d bytes", te.MaxTokens, len(salvaged), len(partial))
+			result = salvaged
+			truncated = true
+			truncatedAt = te.MaxTokens
 		}
-		rev = repaired
+		verbose("Received LLM response (%d bytes)", len(result))
+		if callUsage.CacheReadInputTokens > 0 || callUsage.CacheCreationInputTokens > 0 {
+			verbose("Token usage: input=%d (cache read=%d, cache write=%d), output=%d",
+				callUsage.InputTokens, callUsage.CacheReadInputTokens, callUsage.CacheCreationInputTokens, callUsage.OutputTokens)
+		} else if callUsage.InputTokens > 0 {
+			verbose("Token usage: input=%d, output=%d", callUsage.InputTokens, callUsage.OutputTokens)
+		}
+
+		if f.Debug {
+			debugRespPath, err := writeDebugFile(f.DebugDir, "plancritic-debug-response-*.txt", []byte(result))
+			if err != nil {
+				verbose("Warning: failed to write debug response: %v", err)
+			} else {
+				verbose("Wrote debug response to %s", debugRespPath)
+			}
+		}
+
+		// 10a. Parse JSON
+		result = llm.ExtractJSON(result)
+		var rev review.Review
+		if err := json.Unmarshal([]byte(result), &rev); err != nil {
+			// Try sanitizing invalid escape sequences (common with Gemini).
+			// Use a fresh Review so partial fields from the failed unmarshal
+			// don't bleed into the retry result.
+			sanitized := llm.SanitizeJSON(result)
+			var rev2 review.Review
+			if err2 := json.Unmarshal([]byte(sanitized), &rev2); err2 != nil {
+				return review.Review{}, false, 0, Errorf(5, "failed to parse LLM response as JSON: %v (pre-sanitize: %v)", err2, err)
+			}
+			rev = rev2
+			verbose("Sanitized invalid JSON escape sequences")
+		}
+
+		// 10b. Validate.
+		validationErrs := schema.Validate(&rev, len(p.Lines), contextLineCounts)
+		if shape.Coverage && rev.Coverage == nil {
+			// Validate cannot know a spec was supplied; a missing matrix must
+			// go through repair rather than be mistaken for "no requirements".
+			validationErrs = append(validationErrs, schema.ValidationError{Path: "coverage", Message: "required when a specification is provided"})
+		}
+		if len(validationErrs) > 0 {
+			// Mechanical defects (empty or duplicate IDs, inverted or
+			// overlong line ranges) are fixed locally; they need no model.
+			if fixes := schema.AutoFix(&rev, len(p.Lines), contextLineCounts); len(fixes) > 0 {
+				for _, fx := range fixes {
+					verbose("Auto-fixed %s", fx)
+				}
+				validationErrs = schema.Validate(&rev, len(p.Lines), contextLineCounts)
+			}
+		}
+		if len(validationErrs) > 0 {
+			// Whatever remains needs the model. Only the offending items
+			// are resent when every error is attributable to one.
+			verbose("Validation failed (%d errors), attempting repair...", len(validationErrs))
+			repaired, repairUsage, err := repairReview(ctx, modelProvider, settings, rev, validationErrs, repairBounds{
+				PlanName:          filepath.Base(p.FilePath),
+				PlanLines:         len(p.Lines),
+				ContextLineCounts: contextLineCounts,
+				Sources:           prompt.RenderSources(p, contexts),
+				Shape:             shape,
+			}, verbose)
+			calls++
+			usage = addUsage(usage, repairUsage)
+			if err != nil {
+				return review.Review{}, false, 0, err
+			}
+			rev = repaired
+		}
+		verbose("Validation passed")
+		return rev, truncated, truncatedAt, nil
 	}
-	verbose("Validation passed")
+
+	rev, truncated, truncatedAt, err := generate()
+	if err != nil {
+		return review.Review{}, err
+	}
+	// A truncated answer already carries its own notice and is never
+	// cached; retrying it at the same max_tokens would truncate again.
+	degenerate := !truncated && isDegenerate(rev, shape.Coverage, len(p.Lines))
+	var retryErr error
+	if degenerate {
+		verbose("Model returned an empty review for a %d-line plan; retrying once", len(p.Lines))
+		if settings.Seed != nil {
+			// A provider that honors the seed would replay the same
+			// empty sample; derive a distinct, still reproducible one.
+			retrySeed := *settings.Seed + 1
+			settings.Seed = &retrySeed
+		}
+		retry, retryTruncated, retryTruncatedAt, err := generate()
+		retryErr = err
+		switch {
+		case err != nil:
+			// The first answer is schema-valid; keep it, flagged, rather
+			// than fail a run that already has a result.
+			verbose("Retry failed (%v); keeping the empty review", err)
+		default:
+			rev, truncated, truncatedAt = retry, retryTruncated, retryTruncatedAt
+			degenerate = !truncated && isDegenerate(rev, shape.Coverage, len(p.Lines))
+		}
+		if degenerate {
+			verbose("Model returned an empty review again; it will not be cached")
+		}
+	}
 
 	// 10b. Reconstruct evidence quotes from cited line ranges. The LLM
 	// is instructed to omit the quote field to save output tokens; any
@@ -531,6 +578,9 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	// 11. Post-process
 	if truncated {
 		rev.Issues = append(rev.Issues, truncationNotice(truncatedAt, filepath.Base(p.FilePath), p.Lines))
+	}
+	if degenerate {
+		rev.Issues = append(rev.Issues, degenerateNotice(filepath.Base(p.FilePath), p.Lines, retryErr))
 	}
 	review.SortIssues(rev.Issues)
 	review.SortQuestions(rev.Questions)
@@ -558,9 +608,10 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	// Persist the validated, sorted, grounding-checked review before the
 	// output-only filters run (see finalize). Write failures are logged,
 	// never fatal: the cache is an optimization.
-	// A truncated review is incomplete by definition; never serve it
-	// from cache.
-	if resultStore != nil && !truncated {
+	// A truncated review is incomplete by definition, and a degenerate
+	// one is almost certainly a bad sample; never serve either from
+	// cache, so the next identical run asks the model again.
+	if resultStore != nil && !truncated && !degenerate {
 		if err := resultStore.Put(resultKey, rev); err != nil {
 			verbose("Result cache write failed: %v", err)
 		}
@@ -574,6 +625,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		CacheCreationInputTokens: usage.CacheCreationInputTokens,
 	})
 	out.Meta.Truncated = truncated
+	out.Meta.Degenerate = degenerate
 	return out, nil
 }
 
@@ -609,6 +661,59 @@ func truncationNotice(maxTokens int, planName string, planLines []string) review
 			{Source: "plan", Path: planName, LineStart: 1, LineEnd: 1, Quote: firstLine},
 		},
 		Tags: []string{"system", "truncated"},
+	}
+}
+
+// degenerateMinPlanLines is the plan length above which an empty review
+// is treated as a failed sample rather than a clean plan. Short plans
+// can legitimately yield nothing to report.
+const degenerateMinPlanLines = 50
+
+// isDegenerate reports whether a schema-valid model answer is
+// effectively empty: no issues and no questions for a plan longer than
+// degenerateMinPlanLines and, when a spec was supplied, no coverage
+// requirements either. Such answers have been observed at low effort
+// (a few dozen output tokens) and are not reproducible on re-run. Only
+// the model's own findings count; local lint findings are merged later.
+func isDegenerate(rev review.Review, wantCoverage bool, planLines int) bool {
+	if planLines <= degenerateMinPlanLines {
+		return false
+	}
+	if len(rev.Issues) > 0 || len(rev.Questions) > 0 {
+		return false
+	}
+	if wantCoverage {
+		return rev.Coverage == nil || len(rev.Coverage.Requirements) == 0
+	}
+	return true
+}
+
+// degenerateNotice is appended when the model's answer was empty and
+// the one retry was empty too (or failed, reported by retryErr), so the
+// caller sees that the absence of findings is not evidence of a clean
+// plan. Like truncationNotice it cites the plan's first line only
+// because the schema requires evidence.
+func degenerateNotice(planName string, planLines []string, retryErr error) review.Issue {
+	firstLine := ""
+	if len(planLines) > 0 {
+		firstLine = planLines[0]
+	}
+	retryOutcome := "and again on one retry"
+	if retryErr != nil {
+		retryOutcome = fmt.Sprintf("and the one retry failed (%v)", retryErr)
+	}
+	return review.Issue{
+		ID:             "ISSUE-EMPTY-RESPONSE",
+		Severity:       review.SeverityWarn,
+		Category:       review.CategoryAmbiguity,
+		Title:          "Model returned an empty review",
+		Description:    fmt.Sprintf("The model reported no issues, no questions, and no coverage for a %d-line plan on the first call, %s. An empty answer for a plan this size is almost always a failed sample, not a clean plan. The result was not cached. This is a notice about the run, not a defect at the cited line.", len(planLines), retryOutcome),
+		Impact:         "The review likely understates the plan's issues.",
+		Recommendation: "Re-run, or raise --effort.",
+		Evidence: []review.Evidence{
+			{Source: "plan", Path: planName, LineStart: 1, LineEnd: 1, Quote: firstLine},
+		},
+		Tags: []string{"system", "degenerate"},
 	}
 }
 

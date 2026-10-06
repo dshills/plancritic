@@ -17,7 +17,7 @@ import (
 //
 // Line formats:
 //
-//	VERDICT <verdict> score=<n> critical=<n> warn=<n> info=<n> [cached] [truncated] [new=<n> persisting=<n> resolved=<n> score_change=<+n>] [in=<n> out=<n> [cache_read=<n> cache_write=<n>]]
+//	VERDICT <verdict> score=<n> critical=<n> warn=<n> info=<n> [cached] [truncated] [degenerate] [new=<n> persisting=<n> resolved=<n> score_change=<+n>] [in=<n> out=<n> [cache_read=<n> cache_write=<n>]]
 //	<ISSUE-ID> <SEVERITY>[(blocking)] <CATEGORY> <loc>[,<loc>...] "<title>" -> <recommendation> [tags]
 //	<Q-ID> <SEVERITY> <loc> "<question>" -> <why needed>
 //	RESOLVED <kind> <baseline id> "<title>"
@@ -126,6 +126,9 @@ func CompactHeader(r *review.Review) string {
 	}
 	if r.Meta.Truncated {
 		b.WriteString(" truncated")
+	}
+	if r.Meta.Degenerate {
+		b.WriteString(" degenerate")
 	}
 	if d := r.Delta; d != nil {
 		fmt.Fprintf(&b, " new=%d persisting=%d resolved=%d score_change=%+d", len(d.New), len(d.Persisting), len(d.Resolved), d.ScoreChange)

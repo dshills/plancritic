@@ -248,8 +248,8 @@ CHECK TESTING pass=2 fail=1 na=0
 CHECK TESTING FAIL "Are tests mapped to acceptance criteria?"
 ```
 
-The first line is always the verdict summary; `cached` and `truncated` markers are
-appended when they apply. `--quiet` prints just that line to stdout, which pairs
+The first line is always the verdict summary; `cached`, `truncated`, and
+`degenerate` markers are appended when they apply. `--quiet` prints just that line to stdout, which pairs
 with `--out` for the full report. `--no-quotes` strips evidence quotes from the
 `json` and `md` formats while keeping line references.
 
@@ -278,6 +278,7 @@ generate findings you will discard) produces a new key and a fresh review.
 - Entries expire after 7 days.
 - Location: `$XDG_CACHE_HOME/plancritic/results` (Linux), `~/Library/Caches/plancritic/results` (macOS). Set `PLANCRITIC_CACHE_DIR` to relocate it.
 - `--no-result-cache` (or `PLANCRITIC_NO_RESULT_CACHE=1`) forces a model call for one run. `--no-cache` disables this cache and provider-side prompt caching together.
+- Incomplete or suspect reviews are never stored. A response truncated at `--max-tokens` is not cached. Neither is a *degenerate* response: for a plan longer than 50 lines, the model returned no issues and no questions (and, with `--spec`, no coverage requirements). This has been seen as a rare bad sample at `--effort low`. plancritic retries such a response once. If the retry is normal, it is used and cached as usual. If the retry is also empty, the review is returned uncached, with `"meta": {"degenerate": true}` and a WARN issue `ISSUE-EMPTY-RESPONSE` (tagged `system`), so the next identical run asks the model again.
 
 Provider-side prompt caching is separate: the static prefix (rules, schema, profile)
 and the context files are marked as cache breakpoints so a re-run after editing the
