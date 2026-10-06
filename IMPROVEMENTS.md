@@ -231,6 +231,18 @@ model stays consistent across runs instead of re-discovering them with different
 
 ### 9. Tell the model the output constraints that the runner enforces  — Tokens, Accuracy
 
+**Status: done.** The prompt now states the severity threshold ("report only WARN and
+CRITICAL findings; the caller discards INFO") and asks for the most severe N when the
+caps bind. The threshold is therefore part of the result-cache key (a review generated
+for `warn` never contained INFO findings). The positional-truncation concern was moot:
+issues are sorted by severity before the cap applies. `review.DedupIssues` merges
+same-category issues whose citations overlap and whose titles are the same statement
+after normalizing case, edge punctuation, stopwords, and contractions (identical token
+sequences). Identical citations alone never merge (one line can carry two unrelated
+findings), and any added, dropped, reordered, negated, or changed word blocks the
+merge, since each can change the finding; a missed merge only costs a duplicate line. The kept issue absorbs
+the extra evidence, the blocking flag, and a `merged:<id>` tag.
+
 **Evidence:** `--severity-threshold`, `--max-issues`, and `--max-questions` are applied
 *after* generation (`review.FilterBySeverity`, `review.Truncate`). The model produces
 findings that are then thrown away, and the truncation is positional, so when the model

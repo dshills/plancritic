@@ -124,7 +124,7 @@ Common overrides:
 | `--max-tokens <n>` | 16384 | Cap LLM response size; a response that hits the cap is salvaged and flagged (`meta.truncated`) rather than failed |
 | `--temperature <float>` | 0.2 | LLM temperature |
 | `--seed <int>` | — | Seed for reproducibility (if supported) |
-| `--severity-threshold` | `info` | Minimum severity included in output |
+| `--severity-threshold` | `info` | Minimum severity to report; the model is told not to generate findings below it |
 | `--patch-out <path>` | — | Ask the model for plan edits and write them as a unified diff |
 | `--checklists` | false | Ask the model to grade every profile checklist item (PASS/FAIL/N/A) |
 | `--baseline <path>` | — | Earlier run's JSON output; adds a resolved/new/persisting delta to the result |
@@ -216,10 +216,11 @@ provider, model, temperature, seed, and max-tokens settings. Re-running with
 identical inputs returns the stored review in milliseconds with no provider
 call and no tokens billed; the output carries `"meta": {"cached": true}`.
 
-Output-only flags (`--format`, `--out`, `--severity-threshold`, `--patch-out`,
+Output-only flags (`--format`, `--out`, `--no-quotes`, `--quiet`, `--baseline`,
 `--fail-on`) are applied on top of the cached review, so changing them does not
-trigger a new model call. Any change to the plan, context files, profile, or
-model settings produces a new key and a fresh review.
+trigger a new model call. Any change to the plan, context files, profile, model
+settings, or `--severity-threshold` (which is told to the model so it does not
+generate findings you will discard) produces a new key and a fresh review.
 
 - Entries expire after 7 days.
 - Location: `$XDG_CACHE_HOME/plancritic/results` (Linux), `~/Library/Caches/plancritic/results` (macOS). Set `PLANCRITIC_CACHE_DIR` to relocate it.

@@ -310,3 +310,22 @@ func TestRenderSourcesMatchesMainPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSeverityThresholdInstruction(t *testing.T) {
+	p := &plan.Plan{FilePath: "plan.md", Lines: []string{"step"}}
+	info := Build(BuildOpts{Plan: p, SeverityThreshold: "info"})
+	if strings.Contains(info, "the caller discards") {
+		t.Error("info threshold needs no restriction")
+	}
+	if !strings.Contains(info, "report the most severe ones") {
+		t.Error("caps line should ask for the most severe findings when the cap binds")
+	}
+	warn := Build(BuildOpts{Plan: p, SeverityThreshold: "warn"})
+	if !strings.Contains(warn, "Report only WARN and CRITICAL findings; the caller discards INFO.") {
+		t.Errorf("warn threshold instruction missing:\n%s", warn)
+	}
+	crit := Build(BuildOpts{Plan: p, SeverityThreshold: "CRITICAL"})
+	if !strings.Contains(crit, "Report only CRITICAL findings; the caller discards WARN and INFO.") {
+		t.Errorf("critical threshold instruction missing:\n%s", crit)
+	}
+}

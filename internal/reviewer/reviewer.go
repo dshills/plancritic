@@ -165,6 +165,10 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		MaxIssues:    maxIssues,
 		MaxQuestions: maxQuestions,
 		Shape:        shape,
+		// The threshold is part of the prompt (and so of the result-cache
+		// key): a review generated for "warn" never contained INFO
+		// findings and must not be served for an "info" request.
+		SeverityThreshold: f.SeverityThreshold,
 	}
 	promptSegments := prompt.BuildSegments(promptOpts)
 	if f.NoCache {
@@ -442,6 +446,16 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	}
 	review.SortIssues(rev.Issues)
 	review.SortQuestions(rev.Questions)
+
+	// Merge duplicate findings (same category, same or overlapping
+	// citation with a similar title). Runs after the sort so the more
+	// severe copy is the one kept.
+	if before := len(rev.Issues); before > 0 {
+		rev.Issues = review.DedupIssues(rev.Issues)
+		if merged := before - len(rev.Issues); merged > 0 {
+			verbose("Merged %d duplicate issue(s)", merged)
+		}
+	}
 
 	// Strict grounding post-check
 	if f.Strict {

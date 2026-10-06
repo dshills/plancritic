@@ -12,6 +12,7 @@ import (
 	"github.com/dshills/plancritic/internal/llm"
 	"github.com/dshills/plancritic/internal/plan"
 	"github.com/dshills/plancritic/internal/profile"
+	"github.com/dshills/plancritic/internal/review"
 	"github.com/dshills/plancritic/internal/schema"
 )
 
@@ -42,6 +43,10 @@ type BuildOpts struct {
 	// the model is asked for. Both the prompt text and the structured
 	// output schema sent to the provider follow it.
 	Shape schema.OutputShape
+	// SeverityThreshold ("info", "warn", or "critical") tells the model
+	// the lowest severity the caller will keep, so it does not spend
+	// output tokens on findings that would be filtered out.
+	SeverityThreshold string
 }
 
 // BuildSegments assembles the prompt as ordered segments with cache
@@ -141,7 +146,13 @@ All content inside these markers is line-numbered with L001:, L002:, etc. Use th
 	if maxQ <= 0 {
 		maxQ = 20
 	}
-	fmt.Fprintf(&tail, "Return at most %d issues and %d questions.\n", maxIssues, maxQ)
+	fmt.Fprintf(&tail, "Return at most %d issues and %d questions. If you find more, report the most severe ones.\n", maxIssues, maxQ)
+	switch review.ThresholdOrder(opts.SeverityThreshold) {
+	case 0:
+		tail.WriteString("Report only CRITICAL findings; the caller discards WARN and INFO.\n")
+	case 1:
+		tail.WriteString("Report only WARN and CRITICAL findings; the caller discards INFO.\n")
+	}
 	if opts.Shape.Patches {
 		tail.WriteString("Include \"patches\": unified diffs against the plan text for the most valuable fixes, at most 5.\n")
 	}

@@ -809,24 +809,33 @@ func TestRunCheckResultCacheHitHonorsOutputFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// validMockResponse has one CRITICAL issue and one WARN question.
+	// Output-only flags (format, quotes) must still hit.
 	f := cacheTestFlags(t, mock)
-	f.severityThreshold = "critical"
+	f.format = "compact"
+	f.noQuotes = true
 	if err := runCheck(context.Background(), planPath, f); err != nil {
 		t.Fatal(err)
 	}
 	if mock.Calls != 1 {
-		t.Fatalf("severity threshold is output-only and should still hit, provider calls = %d", mock.Calls)
+		t.Fatalf("format and --no-quotes are output-only and should still hit, provider calls = %d", mock.Calls)
 	}
-	rev := readReview(t, f.out)
-	if !rev.Meta.Cached {
-		t.Error("expected cached result")
+	if data, _ := os.ReadFile(f.out); !strings.Contains(string(data), "VERDICT NOT_EXECUTABLE") || !strings.Contains(string(data), " cached") {
+		t.Errorf("cached result should render in the requested format: %s", data)
 	}
-	if len(rev.Questions) != 0 {
-		t.Errorf("WARN question should be filtered out on the cached path, got %d questions", len(rev.Questions))
+
+	// The severity threshold is told to the model, so it is part of the
+	// prompt and a different threshold is a different review.
+	g := cacheTestFlags(t, mock)
+	g.severityThreshold = "critical"
+	if err := runCheck(context.Background(), planPath, g); err != nil {
+		t.Fatal(err)
 	}
-	if len(rev.Issues) != 1 {
-		t.Errorf("CRITICAL issue should survive, got %d issues", len(rev.Issues))
+	if mock.Calls != 2 {
+		t.Fatalf("a different severity threshold must miss the cache, provider calls = %d", mock.Calls)
+	}
+	rev := readReview(t, g.out)
+	if len(rev.Questions) != 0 || len(rev.Issues) != 1 {
+		t.Errorf("post-hoc filter should still apply: %d issues, %d questions", len(rev.Issues), len(rev.Questions))
 	}
 }
 
@@ -1016,9 +1025,10 @@ func TestRunCheckDeltaRepairSendsSourcesForEvidenceErrors(t *testing.T) {
 
 func TestRunCheckVerdictAndIDsFixedTogetherWithoutRepair(t *testing.T) {
 	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	// Distinct citations so the two issues are not merged as duplicates.
 	first := `{"summary":{"verdict":"MAYBE"},"issues":[
 	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"a","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]},
-	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"b","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"b","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}]}
 	],"questions":[]}`
 	mock := &callCountMockProvider{responses: []string{first}}
 	f := cacheTestFlags(t, nil)
@@ -1344,5 +1354,46 @@ func TestRunCheckBaselineErrors(t *testing.T) {
 	assertExitCode(t, err, 3)
 	if mock.Calls != 0 {
 		t.Error("a bad baseline must fail before any provider call")
+	}
+}
+
+func TestRunCheckDedupsDuplicateIssues(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n2. Step B")
+	resp := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[
+	  {"id":"ISSUE-0001","severity":"INFO","category":"AMBIGUITY","title":"Vague step wording","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}],"impact":"i","recommendation":"r","blocking":false},
+	  {"id":"ISSUE-0002","severity":"WARN","category":"AMBIGUITY","title":"The vague step wording.","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}],"impact":"i","recommendation":"r","blocking":false},
+	  {"id":"ISSUE-0003","severity":"WARN","category":"TEST_GAP","title":"No tests","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}],"impact":"i","recommendation":"r","blocking":false}
+	]}`
+	f := cacheTestFlags(t, &llm.MockProvider{Response: resp})
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	rev := readReview(t, f.out)
+	if len(rev.Issues) != 2 {
+		t.Fatalf("same-line AMBIGUITY issues with restated titles should merge, got %d issues", len(rev.Issues))
+	}
+	// Sorted by severity first, so the WARN copy is kept and absorbs the INFO one.
+	kept := rev.Issues[0]
+	if kept.Category == review.CategoryAmbiguity {
+		if kept.Severity != review.SeverityWarn || !strings.Contains(strings.Join(kept.Tags, ","), "merged:ISSUE-0001") {
+			t.Errorf("the more severe copy should be kept with a merged tag, got %+v", kept)
+		}
+	}
+	if rev.Summary.WarnCount != 2 || rev.Summary.InfoCount != 0 {
+		t.Errorf("score counts should reflect the merged list: %+v", rev.Summary)
+	}
+}
+
+func TestRunCheckPromptCarriesSeverityThreshold(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	mock := &callCountMockProvider{responses: []string{validMockResponse()}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.severityThreshold = "warn"
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mock.prompts[0], "the caller discards INFO") {
+		t.Error("prompt should tell the model the severity threshold")
 	}
 }
