@@ -1761,3 +1761,180 @@ func TestRunCheckModelFindingSupersedesLocalCandidate(t *testing.T) {
 		t.Errorf("the model's confirmed WARN should replace the local INFO candidate, got %+v", rev.Issues)
 	}
 }
+
+// --- degenerate (empty) model responses ---
+
+// longPlan is above the reviewer's degenerate-response threshold.
+func longPlan() string {
+	var b strings.Builder
+	b.WriteString("# Plan\n")
+	for i := 1; i <= 60; i++ {
+		b.WriteString("1. Step\n")
+	}
+	return b.String()
+}
+
+const emptyModelResponse = `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[],"questions":[]}`
+
+func TestRunCheckDegenerateResponseRetriedOnce(t *testing.T) {
+	planPath := writeTempPlan(t, longPlan())
+	mock := &callCountMockProvider{responses: []string{emptyModelResponse, validMockResponse()}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.noLint = true
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if mock.callIdx != 2 {
+		t.Fatalf("an empty response should be retried once, got %d calls", mock.callIdx)
+	}
+	rev := readReview(t, f.out)
+	if rev.Meta.Degenerate {
+		t.Error("a normal retry must not be flagged degenerate")
+	}
+	if rev.Meta.Usage == nil || rev.Meta.Usage.Calls != 2 {
+		t.Errorf("usage should count both calls: %+v", rev.Meta.Usage)
+	}
+	if len(rev.Issues) == 0 || rev.Issues[0].ID == "ISSUE-EMPTY-RESPONSE" {
+		t.Errorf("the retry's findings should be reported: %+v", rev.Issues)
+	}
+
+	// The good retry is cached as usual.
+	again := cacheTestFlags(t, nil)
+	again.provider = mock
+	again.noLint = true
+	if err := runCheck(context.Background(), planPath, again); err != nil {
+		t.Fatal(err)
+	}
+	if mock.callIdx != 2 || !readReview(t, again.out).Meta.Cached {
+		t.Errorf("the recovered review should be served from cache, calls = %d", mock.callIdx)
+	}
+}
+
+func TestRunCheckDegenerateResponseNotCached(t *testing.T) {
+	planPath := writeTempPlan(t, longPlan())
+	mock := &callCountMockProvider{responses: []string{emptyModelResponse, emptyModelResponse, validMockResponse()}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.noLint = true
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if mock.callIdx != 2 {
+		t.Fatalf("expected the call and exactly one retry, got %d calls", mock.callIdx)
+	}
+	rev := readReview(t, f.out)
+	if !rev.Meta.Degenerate {
+		t.Error("two empty responses should set meta.degenerate")
+	}
+	if len(rev.Issues) != 1 || rev.Issues[0].ID != "ISSUE-EMPTY-RESPONSE" || rev.Issues[0].Severity != review.SeverityWarn {
+		t.Fatalf("expected a single WARN system notice, got %+v", rev.Issues)
+	}
+
+	// The next identical run must reach the model, not the cache.
+	again := cacheTestFlags(t, nil)
+	again.provider = mock
+	again.noLint = true
+	if err := runCheck(context.Background(), planPath, again); err != nil {
+		t.Fatal(err)
+	}
+	if mock.callIdx != 3 {
+		t.Fatalf("a degenerate review must not be cached, calls = %d", mock.callIdx)
+	}
+	if rev := readReview(t, again.out); rev.Meta.Cached || rev.Meta.Degenerate {
+		t.Errorf("second run should be a fresh, normal review: %+v", rev.Meta)
+	}
+}
+
+func TestRunCheckDegenerateRetryFailureKeepsFirstResponse(t *testing.T) {
+	planPath := writeTempPlan(t, longPlan())
+	// Only one response: the retry gets a provider error.
+	mock := &callCountMockProvider{responses: []string{emptyModelResponse}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.noLint = true
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatalf("a failed retry should not fail the run: %v", err)
+	}
+	rev := readReview(t, f.out)
+	if !rev.Meta.Degenerate {
+		t.Error("the kept empty review should be flagged degenerate")
+	}
+	if len(rev.Issues) != 1 || !strings.Contains(rev.Issues[0].Description, "retry failed") {
+		t.Errorf("the notice should say the retry failed, not that it was empty: %+v", rev.Issues)
+	}
+}
+
+func TestRunCheckDegenerateRetryUsesDistinctSeed(t *testing.T) {
+	planPath := writeTempPlan(t, longPlan())
+	mock := &callCountMockProvider{responses: []string{emptyModelResponse, validMockResponse()}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.noLint = true
+	f.seed = 7
+	f.hasSeed = true
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if len(mock.settings) != 2 || mock.settings[0].Seed == nil || mock.settings[1].Seed == nil {
+		t.Fatalf("both calls should carry a seed: %+v", mock.settings)
+	}
+	if *mock.settings[0].Seed != 7 || *mock.settings[1].Seed == 7 {
+		t.Errorf("retry should use a different seed: first=%d retry=%d", *mock.settings[0].Seed, *mock.settings[1].Seed)
+	}
+}
+
+func TestRunCheckEmptyResponseNotDegenerate(t *testing.T) {
+	// A short plan can legitimately be clean.
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+	mock := &callCountMockProvider{responses: []string{emptyModelResponse}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if mock.callIdx != 1 || readReview(t, f.out).Meta.Degenerate {
+		t.Errorf("short plan: no retry and no flag, calls = %d", mock.callIdx)
+	}
+
+	// With a spec, a populated coverage block is a real answer even with
+	// no issues or questions.
+	dir := t.TempDir()
+	planPath = filepath.Join(dir, "PLAN.md")
+	specPath := filepath.Join(dir, "SPEC.md")
+	if err := os.WriteFile(planPath, []byte(longPlan()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, []byte("# Spec\nUsers must log in."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	covered := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[],"questions":[],"coverage":{
+	  "requirements":[{"id":"REQ-0001","requirement":"Users must log in","status":"COVERED","spec_evidence":[{"source":"context","path":"SPEC.md","line_start":2,"line_end":2}],"plan_evidence":[{"source":"plan","path":"PLAN.md","line_start":2,"line_end":2}],"note":""}],
+	  "out_of_scope":[]}}`
+	specMock := &callCountMockProvider{responses: []string{covered}}
+	g := cacheTestFlags(t, nil)
+	g.provider = specMock
+	g.specPath = specPath
+	g.noLint = true
+	if err := runCheck(context.Background(), planPath, g); err != nil {
+		t.Fatal(err)
+	}
+	if specMock.callIdx != 1 || readReview(t, g.out).Meta.Degenerate {
+		t.Errorf("coverage present: no retry and no flag, calls = %d", specMock.callIdx)
+	}
+
+	// The same spec run with an empty coverage block is degenerate.
+	emptyCov := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[],"questions":[],"coverage":{"requirements":[],"out_of_scope":[]}}`
+	t.Setenv(resultcache.EnvDir, t.TempDir())
+	emptyMock := &callCountMockProvider{responses: []string{emptyCov, emptyCov}}
+	h := cacheTestFlags(t, nil)
+	h.provider = emptyMock
+	h.specPath = specPath
+	h.noLint = true
+	if err := runCheck(context.Background(), planPath, h); err != nil {
+		t.Fatal(err)
+	}
+	if emptyMock.callIdx != 2 || !readReview(t, h.out).Meta.Degenerate {
+		t.Errorf("empty coverage with a spec should retry and flag, calls = %d", emptyMock.callIdx)
+	}
+}

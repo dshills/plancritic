@@ -115,6 +115,10 @@ type Meta struct {
 	// Truncated is true when the model hit its output cap and the review
 	// was salvaged from the complete prefix; findings may be missing.
 	Truncated bool `json:"truncated,omitempty"`
+	// Degenerate is true when the model returned an effectively empty
+	// review twice (initial call and one retry). Such a review is never
+	// written to the result cache.
+	Degenerate bool `json:"degenerate,omitempty"`
 	// Usage totals the provider tokens spent on this review across the
 	// main call and any repair call. Absent on a result-cache hit.
 	Usage *Usage `json:"usage,omitempty"`

@@ -404,6 +404,27 @@ the baseline's ~1,060 total lines this is ~3k tokens.
 per line. Low priority; only do it after items 1-4 since it changes the citation convention
 the model is taught.
 
+### 16. Do not cache degenerate (empty) model responses  — Accuracy
+
+**Status: done.** After validation, `reviewer.isDegenerate` checks the model's own answer
+(before local lint findings are merged): no issues and no questions for a plan longer
+than 50 lines and, when `--spec` is given, an empty coverage block. Such an answer is
+retried once. If the retry is normal, it replaces the first answer and is cached. If
+the retry is also empty, the review is returned with `meta.degenerate: true` and a
+WARN `ISSUE-EMPTY-RESPONSE` system notice, and it is not written to the result cache.
+If the retry call itself fails, the first (empty) answer is kept and flagged rather
+than failing the run. Truncated answers are excluded because they already carry their
+own notice and are never cached.
+
+**Evidence:** During live testing, `claude-sonnet-5-5 --effort low` once returned a
+schema-valid review of `specs/PLAN.md` with `--spec specs/SPEC.md`: zero issues, an
+empty coverage block, 79 output tokens. Two immediate re-runs returned 7-9 issues and
+~19 requirements. Because the empty answer validated, the result cache would have
+served it to every identical re-run for 7 days.
+
+**Effort:** Small (`internal/reviewer/reviewer.go`, `internal/review/types.go`,
+`internal/render/compact.go`).
+
 ---
 
 ## Considered and not recommended
