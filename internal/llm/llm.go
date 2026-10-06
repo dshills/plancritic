@@ -28,6 +28,10 @@ type Settings struct {
 	// OnRetry, when set, is called before each retry of a transient
 	// provider failure so callers can log it.
 	OnRetry RetryNotify
+	// CacheTTL is the desired lifetime of provider-side prompt caches.
+	// Anthropic honors 1h (any value >= 1h) or the default 5m; Gemini's
+	// context cache takes the exact duration (see CachingProvider).
+	CacheTTL time.Duration
 	// Effort, when set, asks the model to reason less or more before
 	// answering: one of low, medium, high, xhigh, max (the Anthropic
 	// vocabulary; other providers map it onto their own control).

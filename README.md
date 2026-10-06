@@ -236,6 +236,20 @@ generate findings you will discard) produces a new key and a fresh review.
 - Location: `$XDG_CACHE_HOME/plancritic/results` (Linux), `~/Library/Caches/plancritic/results` (macOS). Set `PLANCRITIC_CACHE_DIR` to relocate it.
 - `--no-result-cache` (or `PLANCRITIC_NO_RESULT_CACHE=1`) forces a model call for one run. `--no-cache` disables this cache and provider-side prompt caching together.
 
+Provider-side prompt caching is separate: the static prefix (rules, schema, profile)
+and the context files are marked as cache breakpoints so a re-run after editing the
+plan only pays full price for the plan. `--cache-ttl` (default `1h`) sets the cache
+lifetime: Anthropic uses its 1-hour tier for any value of an hour or more (otherwise
+the 5-minute default), and Gemini's context cache uses the exact value. Agent loops
+usually pause longer than five minutes between runs, which is why the default is an
+hour.
+
+Every fresh review reports what it cost in `meta.usage` (`calls`, `input_tokens`,
+`output_tokens`, and, when caching applied, `cache_read_input_tokens` and
+`cache_creation_input_tokens`); the compact header shows the same as `in=… out=…`.
+A result-cache hit has no `usage`. If `cache_read_input_tokens` stays at zero across
+re-runs, something in the prefix is changing between runs.
+
 ## Output Format
 
 The model is held to a JSON Schema at the provider level wherever the provider

@@ -93,7 +93,7 @@ func newCheckCmd() *cobra.Command {
 	flags.BoolVar(&f.redactEnabled, "redact", envBool("PLANCRITIC_REDACT", true), "Redact secrets before sending to model")
 	flags.BoolVar(&f.noCache, "no-cache", envBool("PLANCRITIC_NO_CACHE", false), "Disable all caching: provider prompt caches and the local result cache")
 	flags.BoolVar(&f.noResultCache, "no-result-cache", envBool("PLANCRITIC_NO_RESULT_CACHE", false), "Always call the model, even when an identical run is in the local result cache (set PLANCRITIC_CACHE_DIR to relocate the cache)")
-	flags.StringVar(&f.cacheTTL, "cache-ttl", envStr("PLANCRITIC_CACHE_TTL", "1h"), "TTL for provider-side context caches (Gemini only)")
+	flags.StringVar(&f.cacheTTL, "cache-ttl", envStr("PLANCRITIC_CACHE_TTL", "1h"), "Lifetime of provider-side prompt caches: Anthropic uses 1h for values >= 1h (else 5m), Gemini uses the exact value")
 	flags.BoolVar(&f.verbose, "verbose", false, "Print processing steps to stderr")
 	flags.BoolVar(&f.debug, "debug", false, "Save prompt to debug file")
 

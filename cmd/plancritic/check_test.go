@@ -1475,3 +1475,79 @@ func TestRunCheckFastTier(t *testing.T) {
 		t.Errorf("an explicit --model must win over --fast, got %q", got)
 	}
 }
+
+// --- meta.usage and --cache-ttl ---
+
+func TestRunCheckReportsUsageAcrossCalls(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	// First response has an invalid severity (needs a repair call), so
+	// usage must sum both calls.
+	first := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"BOGUS","category":"AMBIGUITY","title":"x","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
+	],"questions":[]}`
+	repair := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"x","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":1,"line_end":1}]}
+	],"questions":[],"patches":[],"checklists":[]}`
+	mock := &usageMockProvider{callCountMockProvider: &callCountMockProvider{responses: []string{first, repair}},
+		usage: llm.Usage{InputTokens: 100, OutputTokens: 40, CacheReadInputTokens: 60, CacheCreationInputTokens: 7}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	rev := readReview(t, f.out)
+	u := rev.Meta.Usage
+	if u == nil {
+		t.Fatal("meta.usage should be present on a fresh review")
+	}
+	want := review.Usage{Calls: 2, InputTokens: 200, OutputTokens: 80, CacheReadInputTokens: 120, CacheCreationInputTokens: 14}
+	if *u != want {
+		t.Errorf("usage = %+v, want %+v", *u, want)
+	}
+
+	// A cache hit reports no usage (nothing was spent) and the compact
+	// header carries the figures only on a fresh run.
+	g := cacheTestFlags(t, nil)
+	g.provider = mock
+	g.format = "compact"
+	if err := runCheck(context.Background(), planPath, g); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(g.out)
+	if !strings.Contains(string(data), " cached") || strings.Contains(string(data), " in=") {
+		t.Errorf("cached compact header should have no usage figures: %s", data)
+	}
+	h := cacheTestFlags(t, &llm.MockProvider{Response: validMockResponse(), Usage: llm.Usage{InputTokens: 5, OutputTokens: 6}})
+	h.format = "compact"
+	h.noResultCache = true
+	if err := runCheck(context.Background(), planPath, h); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(h.out)
+	if !strings.Contains(string(data), " in=5 out=6") {
+		t.Errorf("fresh compact header should show in/out tokens: %s", data)
+	}
+}
+
+// usageMockProvider reports a fixed usage on every call.
+type usageMockProvider struct {
+	*callCountMockProvider
+	usage llm.Usage
+}
+
+func (u *usageMockProvider) Generate(ctx context.Context, prompt string, s llm.Settings) (string, llm.Usage, error) {
+	out, _, err := u.callCountMockProvider.Generate(ctx, prompt, s)
+	return out, u.usage, err
+}
+
+func TestRunCheckInvalidCacheTTLFailsFast(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+	f := cacheTestFlags(t, mock)
+	f.cacheTTL = "soon"
+	err := runCheck(context.Background(), planPath, f)
+	assertExitCode(t, err, 3)
+	if mock.Calls != 0 {
+		t.Error("an invalid --cache-ttl must fail before any provider call")
+	}
+}

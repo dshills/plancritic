@@ -42,7 +42,7 @@ func repairReview(
 	errs []schema.ValidationError,
 	bounds repairBounds,
 	verbose func(string, ...any),
-) (review.Review, error) {
+) (review.Review, llm.Usage, error) {
 	issueIdx, qIdx, pIdx, other := schema.OffendingItems(errs)
 	delta := len(other) == 0 && len(issueIdx)+len(qIdx)+len(pIdx) > 0
 
@@ -50,7 +50,7 @@ func repairReview(
 	if delta {
 		items, err := collectRepairItems(rev, issueIdx, qIdx, pIdx)
 		if err != nil {
-			return review.Review{}, Errorf(5, "prepare repair: %v", err)
+			return review.Review{}, llm.Usage{}, Errorf(5, "prepare repair: %v", err)
 		}
 		verbose("Delta repair: resending %d issue(s), %d question(s), %d patch(es)", len(issueIdx), len(qIdx), len(pIdx))
 		opts := prompt.DeltaRepairOpts{
@@ -71,7 +71,7 @@ func repairReview(
 		// the model sees matches the errors it is asked to fix.
 		current, err := json.Marshal(rev)
 		if err != nil {
-			return review.Review{}, Errorf(5, "prepare full repair: %v", err)
+			return review.Review{}, llm.Usage{}, Errorf(5, "prepare full repair: %v", err)
 		}
 		promptText = prompt.BuildRepair(string(current), errs, bounds.Shape)
 	}
@@ -84,7 +84,7 @@ func repairReview(
 	}
 	out, usage, err := provider.Generate(ctx, promptText, settings)
 	if err != nil {
-		return review.Review{}, Errorf(4, "repair LLM call failed: %v", err)
+		return review.Review{}, usage, Errorf(4, "repair LLM call failed: %v", err)
 	}
 	if usage.InputTokens > 0 {
 		verbose("Repair token usage: input=%d, output=%d", usage.InputTokens, usage.OutputTokens)
@@ -95,14 +95,14 @@ func repairReview(
 	if err := json.Unmarshal([]byte(out), &rev2); err != nil {
 		sanitized := llm.SanitizeJSON(out)
 		if err2 := json.Unmarshal([]byte(sanitized), &rev2); err2 != nil {
-			return review.Review{}, Errorf(5, "repair response is not valid JSON: %v (pre-sanitize: %v)", err2, err)
+			return review.Review{}, usage, Errorf(5, "repair response is not valid JSON: %v (pre-sanitize: %v)", err2, err)
 		}
 	}
 
 	if delta {
 		merged, err := mergeRepaired(rev, rev2, issueIdx, qIdx, pIdx)
 		if err != nil {
-			return review.Review{}, Errorf(5, "repair response unusable: %v", err)
+			return review.Review{}, usage, Errorf(5, "repair response unusable: %v", err)
 		}
 		rev2 = merged
 	}
@@ -113,9 +113,9 @@ func repairReview(
 		for _, e := range errs2 {
 			fmt.Fprintf(os.Stderr, "  %s\n", e)
 		}
-		return review.Review{}, Errorf(5, "LLM output failed schema validation after repair")
+		return review.Review{}, usage, Errorf(5, "LLM output failed schema validation after repair")
 	}
-	return rev2, nil
+	return rev2, usage, nil
 }
 
 // needsSources reports whether any error concerns evidence, in which

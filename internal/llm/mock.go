@@ -9,11 +9,13 @@ type MockProvider struct {
 	// Calls counts Generate invocations so tests can assert that a
 	// code path did (or did not) reach the provider.
 	Calls int
+	// Usage is reported for every call.
+	Usage Usage
 }
 
 func (m *MockProvider) Name() string { return "mock" }
 
 func (m *MockProvider) Generate(_ context.Context, _ string, _ Settings) (string, Usage, error) {
 	m.Calls++
-	return m.Response, Usage{}, m.Err
+	return m.Response, m.Usage, m.Err
 }

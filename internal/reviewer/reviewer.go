@@ -154,6 +154,16 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		}
 	}
 
+	// 6a. Parse the cache TTL once; a typo should fail fast, not
+	// silently disable caching.
+	cacheTTL, err := time.ParseDuration(f.CacheTTL)
+	if f.CacheTTL == "" {
+		cacheTTL, err = time.Hour, nil
+	}
+	if err != nil {
+		return review.Review{}, Errorf(3, "invalid --cache-ttl value %q: %v", f.CacheTTL, err)
+	}
+
 	// 6b. Parse timeout
 	requestTimeoutText := f.Timeout
 	if requestTimeoutText == "" {
@@ -224,7 +234,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	// paths. Severity filtering and truncation are applied here rather
 	// than before caching so a cached review can honor whatever output
 	// flags the next invocation passes.
-	finalize := func(rev review.Review, cached bool) review.Review {
+	finalize := func(rev review.Review, cached bool, usage *review.Usage) review.Review {
 		rev.Issues = review.FilterBySeverity(rev.Issues, f.SeverityThreshold)
 		rev.Questions = review.FilterQuestionsBySeverity(rev.Questions, f.SeverityThreshold)
 		review.Truncate(&rev, maxIssues, maxQuestions)
@@ -253,6 +263,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			Model:       modelProvider.Name() + "/" + modelName,
 			Temperature: f.Temperature,
 			Cached:      cached,
+			Usage:       usage,
 		}
 
 		// Fingerprints need the reconstructed quotes, which every path
@@ -301,7 +312,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			)
 			if cached, ok := resultStore.Get(resultKey); ok {
 				verbose("Result cache hit (%s), skipping LLM call", resultKey[:12])
-				return finalize(cached, true), nil
+				return finalize(cached, true, nil), nil
 			}
 			verbose("Result cache miss (%s)", resultKey[:12])
 		}
@@ -312,6 +323,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	settings := llm.Settings{
 		Model:       requestModel,
 		Effort:      f.Effort,
+		CacheTTL:    cacheTTL,
 		Temperature: f.Temperature,
 		MaxTokens:   f.MaxTokens,
 		// Providers with native structured output enforce the shape at
@@ -330,7 +342,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	defer cancel()
 
 	if !f.NoCache {
-		if name, err := ensureGeminiCache(ctx, modelProvider, promptSegments, requestModel, f.CacheTTL, verbose); err != nil {
+		if name, err := ensureGeminiCache(ctx, modelProvider, promptSegments, requestModel, cacheTTL, verbose); err != nil {
 			verbose("Cache orchestration error (falling back to uncached): %v", err)
 		} else if name != "" {
 			settings.CachedContentName = name
@@ -339,11 +351,13 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 
 	var result string
 	var usage llm.Usage
+	calls := 0
 	if sp, ok := modelProvider.(llm.SegmentedProvider); ok {
 		result, usage, err = sp.GenerateSegments(ctx, promptSegments, settings)
 	} else {
 		result, usage, err = modelProvider.Generate(ctx, promptText, settings)
 	}
+	calls++
 	truncated := false
 	truncatedAt := 0
 	if err != nil {
@@ -435,13 +449,15 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		// 10b. Whatever remains needs the model. Only the offending items
 		// are resent when every error is attributable to one.
 		verbose("Validation failed (%d errors), attempting repair...", len(validationErrs))
-		repaired, err := repairReview(ctx, modelProvider, settings, rev, validationErrs, repairBounds{
+		repaired, repairUsage, err := repairReview(ctx, modelProvider, settings, rev, validationErrs, repairBounds{
 			PlanName:          filepath.Base(p.FilePath),
 			PlanLines:         len(p.Lines),
 			ContextLineCounts: contextLineCounts,
 			Sources:           prompt.RenderSources(p, contexts),
 			Shape:             shape,
 		}, verbose)
+		calls++
+		usage = addUsage(usage, repairUsage)
 		if err != nil {
 			return review.Review{}, err
 		}
@@ -498,9 +514,24 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		}
 	}
 
-	out := finalize(rev, false)
+	out := finalize(rev, false, &review.Usage{
+		Calls:                    calls,
+		InputTokens:              usage.InputTokens,
+		OutputTokens:             usage.OutputTokens,
+		CacheReadInputTokens:     usage.CacheReadInputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+	})
 	out.Meta.Truncated = truncated
 	return out, nil
+}
+
+func addUsage(a, b llm.Usage) llm.Usage {
+	return llm.Usage{
+		InputTokens:              a.InputTokens + b.InputTokens,
+		OutputTokens:             a.OutputTokens + b.OutputTokens,
+		CacheCreationInputTokens: a.CacheCreationInputTokens + b.CacheCreationInputTokens,
+		CacheReadInputTokens:     a.CacheReadInputTokens + b.CacheReadInputTokens,
+	}
 }
 
 // truncationNotice is appended to the issues when the model hit its
@@ -573,7 +604,7 @@ func writeDebugFile(dir, pattern string, data []byte) (string, error) {
 // ("", nil) when caching is not applicable (non-caching provider,
 // prefix too small, store unavailable). Cache creation failures are
 // returned as errors so the caller can log and proceed uncached.
-func ensureGeminiCache(ctx context.Context, provider llm.Provider, segments []llm.Segment, modelFlag, ttlStr string, verbose func(string, ...any)) (string, error) {
+func ensureGeminiCache(ctx context.Context, provider llm.Provider, segments []llm.Segment, modelFlag string, ttl time.Duration, verbose func(string, ...any)) (string, error) {
 	base := llm.Unwrap(provider)
 	cp, ok := base.(llm.CachingProvider)
 	if !ok {
@@ -601,11 +632,6 @@ func ensureGeminiCache(ctx context.Context, provider llm.Provider, segments []ll
 	}
 	if model == "" {
 		model = llm.GeminiDefaultModel
-	}
-
-	ttl, err := time.ParseDuration(ttlStr)
-	if err != nil {
-		return "", fmt.Errorf("invalid --cache-ttl %q: %w", ttlStr, err)
 	}
 
 	// Hash key = model + concatenated cacheable segment bytes.

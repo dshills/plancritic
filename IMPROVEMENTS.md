@@ -289,6 +289,15 @@ but move the static prefix into the `system` field so the user turn is only cont
 
 ### 11. Prompt-cache hygiene: 1-hour TTL, verify minimums, surface usage in the output  — Tokens, Speed
 
+**Status: done.** `--cache-ttl` (default `1h`) now applies to Anthropic breakpoints as
+`cache_control.ttl: "1h"` (dropped and retried if a model rejects it) as well as to
+Gemini; an invalid value fails fast with exit 3. The obsolete prompt-caching beta header
+is gone. `meta.usage` reports calls, input/output tokens, and cache read/write tokens
+summed over the main and repair calls; the compact header shows `in=… out=…` plus cache
+figures when present. The minimum-size concern was checked live: the general-profile
+prefix is written to cache on Opus 5.5 (cache_creation > 0), so no combined breakpoint
+was needed.
+
 **Evidence:** Cache breakpoints use the default 5-minute TTL. In an agent loop the gap
 between runs (agent reads output, edits the plan, re-runs) is routinely longer than five
 minutes, so the context segment (4.3k tokens on the baseline, much larger when a repo tree

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
@@ -63,6 +64,13 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 		block := anthropicContentBlock{Type: "text", Text: seg.Text}
 		if seg.CacheMark {
 			block.CacheControl = &anthropicCacheControl{Type: "ephemeral"}
+			// Agent loops routinely pause longer than the default 5-minute
+			// cache lifetime between runs; a 1-hour entry costs 2x to
+			// write but is read at 0.1x, so it pays off from the third
+			// run in an hour.
+			if s.CacheTTL >= time.Hour {
+				block.CacheControl.TTL = "1h"
+			}
 		}
 		blocks = append(blocks, block)
 	}
@@ -134,6 +142,8 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 			case reqBody.Temperature != nil && strings.Contains(msg, "temperature"):
 				reqBody.Temperature = nil
 				continue
+			case strings.Contains(msg, "ttl") && reqBody.clearCacheTTL():
+				continue
 			}
 		}
 		return "", Usage{}, fmt.Errorf("anthropic: API returned %d: %s", status, string(data))
@@ -182,7 +192,6 @@ func (a *AnthropicProvider) post(ctx context.Context, reqBody anthropicRequest) 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", a.apiKey)
 	req.Header.Set("Anthropic-Version", anthropicAPIVersion)
-	req.Header.Set("Anthropic-Beta", "prompt-caching-2024-07-31")
 
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -295,6 +304,23 @@ type anthropicContentBlock struct {
 
 type anthropicCacheControl struct {
 	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+// clearCacheTTL removes the TTL from every cache breakpoint and reports
+// whether any was set, so a model that rejects the field can be retried
+// with default-lifetime caching.
+func (r *anthropicRequest) clearCacheTTL() bool {
+	cleared := false
+	for _, m := range r.Messages {
+		for i := range m.Content {
+			if cc := m.Content[i].CacheControl; cc != nil && cc.TTL != "" {
+				cc.TTL = ""
+				cleared = true
+			}
+		}
+	}
+	return cleared
 }
 
 type anthropicResponse struct {

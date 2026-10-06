@@ -1705,3 +1705,83 @@ func TestGeminiThinkingLevel(t *testing.T) {
 		t.Errorf("a rejected thinking level should be dropped on retry: %v", bodies)
 	}
 }
+
+// --- cache TTL ---
+
+func TestAnthropicCacheTTL(t *testing.T) {
+	capture := func(ttl time.Duration) (map[string]any, http.Header) {
+		var captured map[string]any
+		var hdr http.Header
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hdr = r.Header.Clone()
+			_ = json.NewDecoder(r.Body).Decode(&captured)
+			_ = json.NewEncoder(w).Encode(anthropicResponse{Content: []anthropicContentBlock{{Type: "text", Text: "{}"}}, StopReason: "end_turn"})
+		}))
+		defer srv.Close()
+		p := &AnthropicProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+		segs := []Segment{{Text: "prefix", CacheMark: true}, {Text: "ctx", CacheMark: true}, {Text: "plan"}}
+		if _, _, err := p.GenerateSegments(context.Background(), segs, Settings{Model: "claude-opus-5-5", CacheTTL: ttl}); err != nil {
+			t.Fatal(err)
+		}
+		return captured, hdr
+	}
+	blocks := func(req map[string]any) []map[string]any {
+		var out []map[string]any
+		for _, b := range req["messages"].([]any)[0].(map[string]any)["content"].([]any) {
+			out = append(out, b.(map[string]any))
+		}
+		return out
+	}
+
+	req, hdr := capture(time.Hour)
+	for i, b := range blocks(req)[:2] {
+		cc, _ := b["cache_control"].(map[string]any)
+		if cc["ttl"] != "1h" {
+			t.Errorf("block %d: expected ttl 1h on cache breakpoints, got %v", i, cc)
+		}
+	}
+	if blocks(req)[2]["cache_control"] != nil {
+		t.Error("the plan block must not carry a cache breakpoint")
+	}
+	if hdr.Get("Anthropic-Beta") != "" {
+		t.Errorf("the obsolete prompt-caching beta header should be gone, got %q", hdr.Get("Anthropic-Beta"))
+	}
+
+	req, _ = capture(5 * time.Minute)
+	if cc, _ := blocks(req)[0]["cache_control"].(map[string]any); cc["ttl"] != nil || cc["type"] != "ephemeral" {
+		t.Errorf("below an hour the default lifetime applies (no ttl field): %v", cc)
+	}
+	req, _ = capture(0)
+	if cc, _ := blocks(req)[0]["cache_control"].(map[string]any); cc["ttl"] != nil {
+		t.Errorf("zero TTL should mean default lifetime: %v", cc)
+	}
+}
+
+func TestAnthropicDropsTTLWhenRejected(t *testing.T) {
+	noSleep(t)
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		first := b["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+		if cc, _ := first["cache_control"].(map[string]any); cc["ttl"] != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"cache_control: Extra inputs are not permitted: ttl"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(anthropicResponse{Content: []anthropicContentBlock{{Type: "text", Text: "{}"}}, StopReason: "end_turn"})
+	}))
+	defer srv.Close()
+	p := &AnthropicProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+	if _, _, err := p.GenerateSegments(context.Background(), []Segment{{Text: "prefix", CacheMark: true}, {Text: "plan"}}, Settings{CacheTTL: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected one retry without ttl, got %d requests", len(bodies))
+	}
+	first := bodies[1]["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if cc, _ := first["cache_control"].(map[string]any); cc == nil || cc["ttl"] != nil {
+		t.Errorf("retry should keep the breakpoint but drop the ttl: %v", first)
+	}
+}

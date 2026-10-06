@@ -109,4 +109,16 @@ type Meta struct {
 	// Truncated is true when the model hit its output cap and the review
 	// was salvaged from the complete prefix; findings may be missing.
 	Truncated bool `json:"truncated,omitempty"`
+	// Usage totals the provider tokens spent on this review across the
+	// main call and any repair call. Absent on a result-cache hit.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is the token accounting for one review.
+type Usage struct {
+	Calls                    int `json:"calls"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }

@@ -45,7 +45,7 @@ func TestRepairReviewFullFallbackSendsCurrentReview(t *testing.T) {
 	p := &capturingProvider{response: string(fixed)}
 	errs := []schema.ValidationError{{Path: "summary.something", Message: "synthetic non-indexed error"}}
 
-	got, err := repairReview(context.Background(), p, llm.Settings{MaxTokens: 100}, rev, errs, repairBounds{PlanName: "plan.md", PlanLines: 3}, func(string, ...any) {})
+	got, _, err := repairReview(context.Background(), p, llm.Settings{MaxTokens: 100}, rev, errs, repairBounds{PlanName: "plan.md", PlanLines: 3}, func(string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
 	}
