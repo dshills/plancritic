@@ -66,6 +66,9 @@ plancritic check plan.md --out review.json --quiet
 # With context files and a specific profile
 plancritic check plan.md --context constraints.md --context tree.txt --profile go-backend
 
+# Against the spec it implements: adds a requirement coverage matrix
+plancritic check plan.md --spec SPEC.md
+
 # Strict grounding mode (no assumptions about the codebase)
 plancritic check plan.md --strict
 
@@ -125,6 +128,8 @@ Common overrides:
 | `--out` | stdout | Output file path |
 | `--no-quotes` | false | Omit evidence quotes from `json`/`md` output; line references are kept |
 | `--quiet` | false | Print only the one-line verdict summary to stdout (pair with `--out`) |
+| `--plan <path>` | — | Plan file (alternative to the positional argument) |
+| `--spec <path>` | — | The specification the plan implements; adds a coverage matrix (see below) |
 | `--context <path>` | — | Additional grounding files (repeatable) |
 | `--profile <name>` | `general` | Built-in checklist profile |
 | `--strict` | false | Strict grounding mode (see below) |
@@ -168,6 +173,25 @@ With `--strict`, the model treats everything not present in the plan or context 
 - A post-check scans descriptions for phrases suggesting fabricated repo knowledge and downgrades those issues to `UNVERIFIED`.
 
 Use strict mode when reviewing plans for unfamiliar codebases or when you want conservative, citation-only output.
+
+## Specification Coverage
+
+Pass the spec the plan is meant to implement with `--spec`. It is sent as a context
+file marked `role="spec"`, and the result gains a `coverage` block: one entry per
+requirement found in the spec, with its spec citation, the plan lines that implement
+it, and a status of `COVERED`, `PARTIAL` (with a note on what is missing), or
+`UNCOVERED`, plus `out_of_scope` entries for plan work with no basis in the spec. The
+`summary` counts are computed by the tool. This replaces the manual spec
+cross-reference an agent would otherwise do by reading both documents itself.
+
+```bash
+plancritic check --plan specs/PLAN.md --spec specs/SPEC.md --format compact
+```
+
+Compact output prints a `COVERAGE` summary line followed by one line per `PARTIAL`,
+`UNCOVERED`, or `OUT_OF_SCOPE` entry (covered requirements are only counted);
+Markdown renders the full matrix as a table. Coverage entries are validated,
+auto-fixed, and repaired like issues.
 
 ## Comparing Runs
 

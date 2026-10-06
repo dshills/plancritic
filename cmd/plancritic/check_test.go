@@ -1551,3 +1551,117 @@ func TestRunCheckInvalidCacheTTLFailsFast(t *testing.T) {
 		t.Error("an invalid --cache-ttl must fail before any provider call")
 	}
 }
+
+// --- --spec coverage and --plan alias ---
+
+func TestResolvePlanPath(t *testing.T) {
+	if p, err := resolvePlanPath([]string{"a.md"}, ""); err != nil || p != "a.md" {
+		t.Errorf("positional: %q %v", p, err)
+	}
+	if p, err := resolvePlanPath(nil, "b.md"); err != nil || p != "b.md" {
+		t.Errorf("--plan: %q %v", p, err)
+	}
+	if p, err := resolvePlanPath([]string{"c.md"}, "c.md"); err != nil || p != "c.md" {
+		t.Errorf("same path both ways is fine: %q %v", p, err)
+	}
+	if _, err := resolvePlanPath([]string{"a.md"}, "b.md"); err == nil {
+		t.Error("two different plans must be rejected")
+	}
+	_, err := resolvePlanPath(nil, "")
+	assertExitCode(t, err, 3)
+}
+
+func TestRunCheckSpecCoverage(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(resultcache.EnvDir, t.TempDir())
+	planPath := filepath.Join(dir, "PLAN.md")
+	specPath := filepath.Join(dir, "SPEC.md")
+	if err := os.WriteFile(planPath, []byte("# Plan\n1. Build login\n2. Add dark mode"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, []byte("# Spec\nUsers must log in.\nAll logins must be audited."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resp := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[],"questions":[],"coverage":{
+	  "requirements":[
+	    {"id":"REQ-0001","requirement":"Users must log in","status":"COVERED","spec_evidence":[{"source":"context","path":"SPEC.md","line_start":2,"line_end":2}],"plan_evidence":[{"source":"plan","path":"PLAN.md","line_start":2,"line_end":2}],"note":""},
+	    {"id":"REQ-0002","requirement":"Logins audited","status":"UNCOVERED","spec_evidence":[{"source":"context","path":"SPEC.md","line_start":3,"line_end":3}],"plan_evidence":[],"note":"no audit step"}
+	  ],
+	  "out_of_scope":[{"id":"SCOPE-0001","plan_step":"Dark mode","plan_evidence":[{"source":"plan","path":"PLAN.md","line_start":3,"line_end":3}],"note":"not in spec"}]
+	}}`
+	mock := &callCountMockProvider{responses: []string{resp}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	f.specPath = specPath
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	prompt := mock.prompts[0]
+	if !strings.Contains(prompt, `path="SPEC.md" role="spec"##`) || !strings.Contains(prompt, "## Specification Coverage") {
+		t.Error("spec should be sent with the spec role and coverage instructions")
+	}
+	if !strings.Contains(string(mock.settings[0].OutputSchema), `"coverage"`) {
+		t.Error("structured-output schema should request coverage when a spec is given")
+	}
+	rev := readReview(t, f.out)
+	c := rev.Coverage
+	if c == nil {
+		t.Fatal("coverage block missing")
+	}
+	if c.Summary != (review.CoverageSummary{Covered: 1, Partial: 0, Uncovered: 1, OutOfScope: 1}) {
+		t.Errorf("summary = %+v", c.Summary)
+	}
+	if c.Requirements[0].SpecEvidence[0].Quote != "Users must log in." || c.Requirements[0].PlanEvidence[0].Quote != "1. Build login" {
+		t.Errorf("coverage quotes should be reconstructed: %+v", c.Requirements[0])
+	}
+	if rev.Input.ContextFiles[0].Path != "SPEC.md" {
+		t.Errorf("the spec should be recorded as an input context file: %+v", rev.Input.ContextFiles)
+	}
+
+	// A model that omits the block despite the spec is sent to repair; a
+	// repair that supplies it succeeds, one that still omits it is exit 5.
+	withoutCov := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"issues":[],"questions":[]}`
+	repairMock := &callCountMockProvider{responses: []string{withoutCov, resp}}
+	h := cacheTestFlags(t, nil)
+	h.provider = repairMock
+	h.specPath = specPath
+	h.noResultCache = true // same inputs as the run above; must not be served from cache
+	if err := runCheck(context.Background(), planPath, h); err != nil {
+		t.Fatalf("a repair that adds coverage should succeed: %v", err)
+	}
+	if repairMock.callIdx != 2 || !strings.Contains(repairMock.prompts[1], "coverage: required when a specification is provided") {
+		t.Errorf("missing coverage should trigger a repair naming the problem: calls=%d", repairMock.callIdx)
+	}
+	if got := readReview(t, h.out).Coverage; got == nil || got.Summary.Covered != 1 {
+		t.Errorf("repaired coverage should be reported: %+v", got)
+	}
+	stillMissing := &callCountMockProvider{responses: []string{withoutCov, withoutCov}}
+	k := cacheTestFlags(t, nil)
+	k.provider = stillMissing
+	k.specPath = specPath
+	k.noResultCache = true
+	assertExitCode(t, runCheck(context.Background(), planPath, k), 5)
+
+	// Without --spec the model is not asked for coverage and none is reported.
+	plain := &callCountMockProvider{responses: []string{validMockResponse()}}
+	g := cacheTestFlags(t, nil)
+	g.provider = plain
+	if err := runCheck(context.Background(), planPath, g); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain.prompts[0], "Specification Coverage") || readReview(t, g.out).Coverage != nil {
+		t.Error("no spec: no coverage")
+	}
+}
+
+func TestRunCheckSpecMissingFailsFast(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+	f := cacheTestFlags(t, mock)
+	f.specPath = filepath.Join(t.TempDir(), "missing.md")
+	err := runCheck(context.Background(), planPath, f)
+	assertExitCode(t, err, 3)
+	if mock.Calls != 0 {
+		t.Error("a missing spec must fail before any provider call")
+	}
+}

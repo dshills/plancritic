@@ -117,3 +117,37 @@ func TestCompactDeltaMarkers(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactCoverage(t *testing.T) {
+	r := &review.Review{
+		Input:   review.Input{PlanFile: "PLAN.md"},
+		Summary: review.Summary{Verdict: review.VerdictExecutable, Score: 100},
+		Coverage: &review.Coverage{
+			Requirements: []review.Requirement{
+				{ID: "REQ-0001", Requirement: "Auth", Status: review.CoverageCovered, SpecEvidence: []review.Evidence{{Source: "context", Path: "SPEC.md", LineStart: 3, LineEnd: 4}}},
+				{ID: "REQ-0002", Requirement: "Audit\nlog", Status: review.CoverageUncovered, SpecEvidence: []review.Evidence{{Source: "context", Path: "SPEC.md", LineStart: 9, LineEnd: 9}}, Note: "no step writes an audit trail"},
+				{ID: "REQ-0003", Requirement: "Rate limit", Status: review.CoveragePartial, SpecEvidence: []review.Evidence{{Source: "context", Path: "SPEC.md", LineStart: 12, LineEnd: 13}}, Note: "no per-user limit"},
+			},
+			OutOfScope: []review.ScopeItem{{ID: "SCOPE-0001", PlanStep: "Dark mode", PlanEvidence: []review.Evidence{{Source: "plan", Path: "x", LineStart: 30, LineEnd: 31}}, Note: "not in spec"}},
+			Summary:    review.CoverageSummary{Covered: 1, Partial: 1, Uncovered: 1, OutOfScope: 1},
+		},
+	}
+	out := Compact(r)
+	for _, want := range []string{
+		"COVERAGE covered=1 partial=1 uncovered=1 out_of_scope=1\n",
+		`REQ-0002 UNCOVERED SPEC.md:L9 "Audit log" -> no step writes an audit trail`,
+		`REQ-0003 PARTIAL SPEC.md:L12-13 "Rate limit" -> no per-user limit`,
+		`SCOPE-0001 OUT_OF_SCOPE PLAN.md:L30-31 "Dark mode" -> not in spec`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("compact coverage missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "REQ-0001") {
+		t.Error("covered requirements should only be counted, not listed")
+	}
+	md := Markdown(r)
+	if !strings.Contains(md, "## Specification Coverage") || !strings.Contains(md, "| REQ-0002 | UNCOVERED | Audit log | L9 | - | no step writes an audit trail |") {
+		t.Errorf("markdown coverage table wrong:\n%s", md)
+	}
+}

@@ -51,7 +51,7 @@ If context is thin or the codebase is unfamiliar, add `--strict`. This forces th
 
    ```bash
    plancritic check PLAN.md \
-     --context SPEC.md \
+     --spec SPEC.md \
      --context /tmp/tree.txt \
      --profile <selected-profile> \
      --format json \
@@ -72,10 +72,7 @@ If context is thin or the codebase is unfamiliar, add `--strict`. This forces th
    - **Warnings** — group by category (`RISK_SECURITY`, `TEST_GAP`, `ORDERING_DEPENDENCY`, etc.). Summarize rather than dump.
    - **Info** — only mention if the count is small or if a specific item is genuinely actionable.
 
-4. **Cross-reference against SPEC.md.** plancritic checks plan internal consistency; the gate also needs to check spec coverage. Flag:
-   - Plan steps that implement work not in the spec (scope creep).
-   - Spec requirements with no corresponding plan step (coverage gap).
-   - Plan ordering that contradicts the spec's backward-planned delivery sequence.
+4. **Spec coverage.** When `SPEC.md` exists, pass it with `--spec SPEC.md` (instead of, or in addition to, `--context`). The result then carries a `coverage` block: every spec requirement with its status (`COVERED`, `PARTIAL`, `UNCOVERED`), the plan lines that implement it, and `out_of_scope` plan work with no basis in the spec. Report the `UNCOVERED` and `PARTIAL` requirements and the out-of-scope items; do not re-derive coverage by reading both documents yourself.
 
 5. **Patches.** If `/tmp/plancritic.patch` is non-empty, summarize what the patch changes and ask whether to apply it (`git apply /tmp/plancritic.patch`). Never apply automatically — the user reviews plan edits before they land.
 

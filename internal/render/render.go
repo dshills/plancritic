@@ -88,6 +88,26 @@ func Markdown(r *review.Review) string {
 		renderDeltaList(&b, "Persisting", d.Persisting)
 	}
 
+	// Specification coverage (only present with --spec)
+	if c := r.Coverage; c != nil {
+		b.WriteString("## Specification Coverage\n\n")
+		fmt.Fprintf(&b, "Covered: %d, partial: %d, uncovered: %d, out of scope: %d.\n\n", c.Summary.Covered, c.Summary.Partial, c.Summary.Uncovered, c.Summary.OutOfScope)
+		if len(c.Requirements) > 0 {
+			b.WriteString("| ID | Status | Requirement | Spec | Plan | Note |\n|---|---|---|---|---|---|\n")
+			for _, req := range c.Requirements {
+				fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n", req.ID, req.Status, mdCell(req.Requirement), mdLocs(req.SpecEvidence), mdLocs(req.PlanEvidence), mdCell(req.Note))
+			}
+			b.WriteString("\n")
+		}
+		if len(c.OutOfScope) > 0 {
+			b.WriteString("**Out of scope (in the plan, not in the spec):**\n")
+			for _, item := range c.OutOfScope {
+				fmt.Fprintf(&b, "- %s %s (%s) %s\n", item.ID, mdCell(item.PlanStep), mdLocs(item.PlanEvidence), mdCell(item.Note))
+			}
+			b.WriteString("\n")
+		}
+	}
+
 	// Checklists (only present when requested with --checklists)
 	if len(r.Checklists) > 0 {
 		b.WriteString("## Checklists\n\n")
@@ -142,4 +162,25 @@ func renderDeltaList(b *strings.Builder, heading string, entries []review.DeltaE
 		fmt.Fprintf(b, "- %s %s [%s] %s\n", e.Kind, e.ID, e.Severity, e.Title)
 	}
 	b.WriteString("\n")
+}
+
+// mdLocs renders evidence as "L12-14, L30" for a table cell.
+func mdLocs(evs []review.Evidence) string {
+	if len(evs) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(evs))
+	for _, ev := range evs {
+		if ev.LineEnd > ev.LineStart {
+			parts = append(parts, fmt.Sprintf("L%d-%d", ev.LineStart, ev.LineEnd))
+		} else {
+			parts = append(parts, fmt.Sprintf("L%d", ev.LineStart))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// mdCell escapes pipes and newlines so free text cannot break a table.
+func mdCell(s string) string {
+	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "|", "\\|")
 }

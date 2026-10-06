@@ -317,6 +317,15 @@ one combined breakpoint (prefix + context) when the prefix alone is below the mo
 
 ### 12. First-class `--spec` role for context files, with a coverage matrix  — Accuracy, Tokens (agent side)
 
+**Status: done.** `--spec <path>` loads the spec as a context file with `role="spec"`
+(shown in its prompt marker) and turns on a `coverage` output section: one entry per
+spec requirement with spec and plan citations and a COVERED/PARTIAL/UNCOVERED status,
+plus `out_of_scope` plan work; the summary counts are computed locally. Coverage
+entries go through the same validation, auto-fix, quote reconstruction, and per-kind
+delta repair as issues. `--plan <path>` is accepted as an alias for the positional
+argument (the `/plan` command's original invocation now works). Compact and Markdown
+renderers show the matrix; the JSON schema documents it.
+
 **Evidence:** SKILL.md instructs the agent to cross-reference the plan against SPEC.md
 *itself* after plancritic runs (scope creep, coverage gaps, ordering versus spec). That is
 expensive agent work that the LLM call could do in the same pass, since both documents are

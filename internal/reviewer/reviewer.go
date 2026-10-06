@@ -61,6 +61,10 @@ type Options struct {
 	// BaselinePath, when set, is an earlier run's JSON output; the
 	// result then carries a Delta of resolved/new/persisting findings.
 	BaselinePath string
+	// SpecPath, when set, is the specification the plan implements. It
+	// is loaded as a context file with the "spec" role and the result
+	// carries a Coverage matrix.
+	SpecPath string
 	// Effort asks the model to reason less or more (see llm.Settings).
 	Effort string
 	// Fast selects the provider's cheaper, faster model tier when no
@@ -88,8 +92,18 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	stepIDs := plan.InferStepIDs(p)
 	verbose("Inferred %d plan steps", len(stepIDs))
 
-	// 2. Load context files
+	// 2. Load context files; the spec (if any) comes first so the model
+	// reads it before the other grounding.
 	var contexts []*pctx.File
+	if f.SpecPath != "" {
+		verbose("Loading spec: %s", f.SpecPath)
+		sf, err := pctx.Load(f.SpecPath)
+		if err != nil {
+			return review.Review{}, Errorf(3, "failed to load spec %s: %v", f.SpecPath, err)
+		}
+		sf.Role = pctx.RoleSpec
+		contexts = append(contexts, sf)
+	}
 	for _, cp := range f.ContextPaths {
 		verbose("Loading context: %s", cp)
 		cf, err := pctx.Load(cp)
@@ -183,7 +197,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	if maxQuestions <= 0 {
 		maxQuestions = review.DefaultMaxQuestions
 	}
-	shape := schema.OutputShape{Patches: f.Patches, Checklists: f.Checklists}
+	shape := schema.OutputShape{Patches: f.Patches, Checklists: f.Checklists, Coverage: f.SpecPath != ""}
 	promptOpts := prompt.BuildOpts{
 		Plan:         p,
 		Contexts:     contexts,
@@ -264,6 +278,19 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			Temperature: f.Temperature,
 			Cached:      cached,
 			Usage:       usage,
+		}
+
+		// Coverage counts are computed here, never taken from the model.
+		// (A missing block when a spec was given is a validation error
+		// earlier in the pipeline, so it is always present here.)
+		if rev.Coverage != nil {
+			if rev.Coverage.Requirements == nil {
+				rev.Coverage.Requirements = []review.Requirement{}
+			}
+			if rev.Coverage.OutOfScope == nil {
+				rev.Coverage.OutOfScope = []review.ScopeItem{}
+			}
+			review.ComputeCoverageSummary(rev.Coverage)
 		}
 
 		// Fingerprints need the reconstructed quotes, which every path
@@ -435,6 +462,11 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		contextLinesByBase[base] = c.Lines
 	}
 	validationErrs := schema.Validate(&rev, len(p.Lines), contextLineCounts)
+	if shape.Coverage && rev.Coverage == nil {
+		// Validate cannot know a spec was supplied; a missing matrix must
+		// go through repair rather than be mistaken for "no requirements".
+		validationErrs = append(validationErrs, schema.ValidationError{Path: "coverage", Message: "required when a specification is provided"})
+	}
 	if len(validationErrs) > 0 {
 		// 10a. Mechanical defects (empty or duplicate IDs, inverted or
 		// overlong line ranges) are fixed locally; they need no model.

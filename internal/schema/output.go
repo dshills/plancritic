@@ -23,6 +23,9 @@ import "encoding/json"
 type OutputShape struct {
 	Patches    bool
 	Checklists bool
+	// Coverage asks for a requirement-by-requirement map of the spec
+	// onto the plan; set only when a spec file was supplied.
+	Coverage bool
 }
 
 func ModelOutputSchema(shape OutputShape) map[string]any {
@@ -84,6 +87,25 @@ func ModelOutputSchema(shape OutputShape) map[string]any {
 		"verdict": enum([]string{"EXECUTABLE_AS_IS", "EXECUTABLE_WITH_CLARIFICATIONS", "NOT_EXECUTABLE"}, ""),
 	}, []string{"verdict"})
 
+	requirement := obj(map[string]any{
+		"id":            str("REQ-NNNN, unique"),
+		"requirement":   str("The requirement restated in at most 15 words"),
+		"status":        enum([]string{"COVERED", "PARTIAL", "UNCOVERED"}, ""),
+		"spec_evidence": arr(evidence),
+		"plan_evidence": arr(evidence),
+		"note":          str("Why PARTIAL or UNCOVERED; empty when COVERED"),
+	}, []string{"id", "requirement", "status", "spec_evidence", "plan_evidence", "note"})
+	scopeItem := obj(map[string]any{
+		"id":            str("SCOPE-NNNN, unique"),
+		"plan_step":     str("The plan work with no basis in the spec, in at most 15 words"),
+		"plan_evidence": arr(evidence),
+		"note":          str(""),
+	}, []string{"id", "plan_step", "plan_evidence", "note"})
+	coverage := obj(map[string]any{
+		"requirements": arr(requirement),
+		"out_of_scope": arr(scopeItem),
+	}, []string{"requirements", "out_of_scope"})
+
 	props := map[string]any{
 		"summary":   summary,
 		"questions": arr(question),
@@ -97,6 +119,10 @@ func ModelOutputSchema(shape OutputShape) map[string]any {
 	if shape.Checklists {
 		props["checklists"] = arr(checklist)
 		required = append(required, "checklists")
+	}
+	if shape.Coverage {
+		props["coverage"] = coverage
+		required = append(required, "coverage")
 	}
 	return obj(props, required)
 }

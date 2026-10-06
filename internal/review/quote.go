@@ -53,6 +53,27 @@ func ReconstructQuotes(r *Review, src QuoteSource) int {
 			}
 		}
 	}
+	if c := r.Coverage; c != nil {
+		for i := range c.Requirements {
+			for j := range c.Requirements[i].SpecEvidence {
+				if !fillQuote(&c.Requirements[i].SpecEvidence[j], src) {
+					misses++
+				}
+			}
+			for j := range c.Requirements[i].PlanEvidence {
+				if !fillQuote(&c.Requirements[i].PlanEvidence[j], src) {
+					misses++
+				}
+			}
+		}
+		for i := range c.OutOfScope {
+			for j := range c.OutOfScope[i].PlanEvidence {
+				if !fillQuote(&c.OutOfScope[i].PlanEvidence[j], src) {
+					misses++
+				}
+			}
+		}
+	}
 	return misses
 }
 

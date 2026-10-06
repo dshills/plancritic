@@ -13,7 +13,9 @@ type Review struct {
 	Checklists []Checklist `json:"checklists,omitempty"`
 	// Delta is present only when a --baseline was supplied.
 	Delta *Delta `json:"delta,omitempty"`
-	Meta  Meta   `json:"meta"`
+	// Coverage is present only when a --spec was supplied.
+	Coverage *Coverage `json:"coverage,omitempty"`
+	Meta     Meta      `json:"meta"`
 }
 
 // Input describes the files and settings used for the review.
@@ -121,4 +123,73 @@ type Usage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// Coverage maps the specification's requirements onto the plan. It is
+// produced only when a spec is supplied (--spec).
+type Coverage struct {
+	Requirements []Requirement   `json:"requirements"`
+	OutOfScope   []ScopeItem     `json:"out_of_scope"`
+	Summary      CoverageSummary `json:"summary"`
+}
+
+// CoverageStatus says how well the plan addresses a requirement.
+type CoverageStatus string
+
+const (
+	CoverageCovered   CoverageStatus = "COVERED"
+	CoveragePartial   CoverageStatus = "PARTIAL"
+	CoverageUncovered CoverageStatus = "UNCOVERED"
+)
+
+// Valid reports whether s is a known coverage status.
+func (s CoverageStatus) Valid() bool {
+	switch s {
+	case CoverageCovered, CoveragePartial, CoverageUncovered:
+		return true
+	}
+	return false
+}
+
+// Requirement is one requirement found in the spec and where (if
+// anywhere) the plan implements it.
+type Requirement struct {
+	ID           string         `json:"id"`
+	Requirement  string         `json:"requirement"`
+	Status       CoverageStatus `json:"status"`
+	SpecEvidence []Evidence     `json:"spec_evidence"`
+	PlanEvidence []Evidence     `json:"plan_evidence"`
+	Note         string         `json:"note,omitempty"`
+}
+
+// ScopeItem is plan work with no basis in the spec.
+type ScopeItem struct {
+	ID           string     `json:"id"`
+	PlanStep     string     `json:"plan_step"`
+	PlanEvidence []Evidence `json:"plan_evidence"`
+	Note         string     `json:"note,omitempty"`
+}
+
+// CoverageSummary counts requirements by status. It is computed by the
+// tool from the entries, never taken from the model.
+type CoverageSummary struct {
+	Covered    int `json:"covered"`
+	Partial    int `json:"partial"`
+	Uncovered  int `json:"uncovered"`
+	OutOfScope int `json:"out_of_scope"`
+}
+
+// ComputeCoverageSummary fills c.Summary from c's entries.
+func ComputeCoverageSummary(c *Coverage) {
+	c.Summary = CoverageSummary{OutOfScope: len(c.OutOfScope)}
+	for _, r := range c.Requirements {
+		switch r.Status {
+		case CoverageCovered:
+			c.Summary.Covered++
+		case CoveragePartial:
+			c.Summary.Partial++
+		case CoverageUncovered:
+			c.Summary.Uncovered++
+		}
+	}
 }

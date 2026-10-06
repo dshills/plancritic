@@ -69,10 +69,10 @@ func TestRepairReviewFullFallbackSendsCurrentReview(t *testing.T) {
 
 func TestMergeRepairedRejectsShortResponse(t *testing.T) {
 	orig := review.Review{Issues: []review.Issue{validIssue("ISSUE-0001", "a"), validIssue("ISSUE-0002", "b")}}
-	if _, err := mergeRepaired(orig, review.Review{}, []int{1}, nil, nil); err == nil {
+	if _, err := mergeRepaired(orig, review.Review{}, map[string][]int{"issues": {1}}); err == nil {
 		t.Error("expected an error when the repair returns fewer items than resent")
 	}
-	merged, err := mergeRepaired(orig, review.Review{Issues: []review.Issue{validIssue("ISSUE-0002", "fixed")}}, []int{1}, nil, nil)
+	merged, err := mergeRepaired(orig, review.Review{Issues: []review.Issue{validIssue("ISSUE-0002", "fixed")}}, map[string][]int{"issues": {1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,5 +81,33 @@ func TestMergeRepairedRejectsShortResponse(t *testing.T) {
 	}
 	if orig.Issues[1].Title != "b" {
 		t.Error("merge must not mutate the original slice")
+	}
+}
+
+func TestMergeRepairedCoverageKinds(t *testing.T) {
+	ev := []review.Evidence{{Source: "context", Path: "SPEC.md", LineStart: 1, LineEnd: 1}}
+	orig := review.Review{Coverage: &review.Coverage{
+		Requirements: []review.Requirement{
+			{ID: "REQ-0001", Requirement: "a", Status: review.CoverageUncovered, SpecEvidence: ev},
+			{ID: "REQ-0002", Requirement: "b", Status: review.CoverageUncovered, SpecEvidence: ev},
+		},
+		OutOfScope: []review.ScopeItem{{ID: "SCOPE-0001", PlanStep: "x"}},
+	}}
+	fix := review.Review{Coverage: &review.Coverage{
+		Requirements: []review.Requirement{{ID: "REQ-0002", Requirement: "b fixed", Status: review.CoverageUncovered, SpecEvidence: ev}},
+		OutOfScope:   []review.ScopeItem{{ID: "SCOPE-0001", PlanStep: "x fixed"}},
+	}}
+	merged, err := mergeRepaired(orig, fix, map[string][]int{"coverage.requirements": {1}, "coverage.out_of_scope": {0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Coverage.Requirements[0].Requirement != "a" || merged.Coverage.Requirements[1].Requirement != "b fixed" || merged.Coverage.OutOfScope[0].PlanStep != "x fixed" {
+		t.Errorf("coverage items should be spliced by index: %+v", merged.Coverage)
+	}
+	if orig.Coverage.Requirements[1].Requirement != "b" {
+		t.Error("merge must not mutate the original coverage")
+	}
+	if _, err := mergeRepaired(orig, review.Review{}, map[string][]int{"coverage.requirements": {0}}); err == nil {
+		t.Error("a repair without coverage must be rejected when coverage items were resent")
 	}
 }

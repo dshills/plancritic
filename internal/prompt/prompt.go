@@ -76,6 +76,7 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 	prefix.WriteString(`## Input Format
 
 Context files (if any) are provided between ##PLANCRITIC_CONTEXT_BEGIN path="..."## and ##PLANCRITIC_CONTEXT_END## markers.
+A context file marked role="spec" is the specification the plan must implement.
 The plan is provided between ##PLANCRITIC_PLAN_BEGIN path="..."## and ##PLANCRITIC_PLAN_END## markers.
 All content inside these markers is line-numbered with L001:, L002:, etc. Use these line numbers in evidence citations.
 
@@ -97,6 +98,17 @@ All content inside these markers is line-numbered with L001:, L002:, etc. Use th
 - Do NOT claim "the repo uses X" unless X appears in the provided context.
 - Recommendations may be generic but MUST be labeled as such ("If applicable...").
 - Any uncertain inference MUST be tagged with "assumption" and severity capped at WARN.
+
+`)
+	}
+	if opts.Shape.Coverage {
+		prefix.WriteString(`## Specification Coverage
+
+A specification is provided (role="spec"). In addition to the review, fill "coverage":
+- "requirements": one entry per distinct requirement in the spec (each must/shall/should statement, numbered requirement, or acceptance criterion), restated in at most 15 words, with "spec_evidence" citing the spec lines. Cite in "plan_evidence" the plan lines that implement it and set "status": COVERED (fully planned), PARTIAL (planned incompletely; say what is missing in "note"), or UNCOVERED (no plan step addresses it; "plan_evidence" empty).
+- "out_of_scope": plan work with no basis in the spec, citing the plan lines.
+- Cover at most 40 requirements; if the spec has more, cover the most consequential ones.
+- An UNCOVERED or PARTIAL requirement belongs in "coverage"; raise it as an issue as well only when it blocks execution.
 
 `)
 	}
@@ -183,7 +195,11 @@ func truncateTitle(s string, limit int) string {
 // RenderContextBlock returns one context file, line-numbered, inside its
 // injection-safe delimiters.
 func RenderContextBlock(c *pctx.File) string {
-	return fmt.Sprintf("%s path=%q##\n%s\n%s\n\n", contextBeginMarker, filepath.Base(c.FilePath), pctx.LineNumbered(c), contextEndMarker)
+	role := ""
+	if c.Role != "" {
+		role = fmt.Sprintf(" role=%q", c.Role)
+	}
+	return fmt.Sprintf("%s path=%q%s##\n%s\n%s\n\n", contextBeginMarker, filepath.Base(c.FilePath), role, pctx.LineNumbered(c), contextEndMarker)
 }
 
 // RenderPlanBlock returns the plan, line-numbered, inside its delimiters.
@@ -270,10 +286,16 @@ func BuildDeltaRepair(o DeltaRepairOpts) string {
 	if o.Shape.Checklists {
 		keys += `, "checklists"`
 	}
+	if o.Shape.Coverage {
+		keys += `, "coverage"`
+	}
 	fmt.Fprintf(&b, "Some items in your plan review failed validation. Fix ONLY the items listed below and return a JSON object with the keys %s.\n\n", keys)
 	fmt.Fprintf(&b, "- \"issues\" must contain exactly %d corrected item(s), \"questions\" exactly %d", counts["issues"], counts["questions"])
 	if o.Shape.Patches {
 		fmt.Fprintf(&b, ", \"patches\" exactly %d", counts["patches"])
+	}
+	if o.Shape.Coverage {
+		fmt.Fprintf(&b, ", \"coverage.requirements\" exactly %d, \"coverage.out_of_scope\" exactly %d", counts["coverage.requirements"], counts["coverage.out_of_scope"])
 	}
 	b.WriteString(", in the order listed below. Use [] for any list with no items below.\n")
 	b.WriteString("- Keep each item's id unless an error says otherwise. Do not add, drop, or reorder items.\n")
@@ -320,9 +342,30 @@ func SchemaText(shape schema.OutputShape) string {
 	if shape.Checklists {
 		b.WriteString(schemaChecklists)
 	}
+	if shape.Coverage {
+		b.WriteString(schemaCoverage)
+	}
 	b.WriteString("\n}")
 	return b.String()
 }
+
+const schemaCoverage = `,
+  "coverage": {
+    "requirements": [{
+      "id": "REQ-NNNN",
+      "requirement": string,
+      "status": "COVERED" | "PARTIAL" | "UNCOVERED",
+      "spec_evidence": [{"source": "context", "path": string, "line_start": int, "line_end": int}],
+      "plan_evidence": [{"source": "plan", "path": string, "line_start": int, "line_end": int}],
+      "note": string
+    }],
+    "out_of_scope": [{
+      "id": "SCOPE-NNNN",
+      "plan_step": string,
+      "plan_evidence": [{"source": "plan", "path": string, "line_start": int, "line_end": int}],
+      "note": string
+    }]
+  }`
 
 const schemaHead = `## Output JSON Schema
 

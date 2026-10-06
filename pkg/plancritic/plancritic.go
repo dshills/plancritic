@@ -43,10 +43,13 @@ type CheckOptions struct {
 	PlanText         string
 	ContextPaths     []string
 	ContextDocuments []ContextDocument
-	ProfileName      string
-	Strict           bool
-	ProviderName     string
-	Model            string
+	// SpecPath is the specification the plan implements; when set the
+	// result carries a Coverage matrix.
+	SpecPath     string
+	ProfileName  string
+	Strict       bool
+	ProviderName string
+	Model        string
 	// Effort is the reasoning effort (low, medium, high, xhigh, max);
 	// Fast selects the provider's cheaper tier when Model is empty.
 	Effort            string
@@ -118,6 +121,7 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 
 	rev, err := reviewer.Run(ctx, planPath, reviewer.Options{
 		ContextPaths:      contextPaths,
+		SpecPath:          opts.SpecPath,
 		ProfileName:       opts.ProfileName,
 		Strict:            opts.Strict,
 		ProviderName:      opts.ProviderName,

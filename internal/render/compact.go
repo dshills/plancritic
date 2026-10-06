@@ -21,6 +21,9 @@ import (
 //	<ISSUE-ID> <SEVERITY>[(blocking)] <CATEGORY> <loc>[,<loc>...] "<title>" -> <recommendation> [tags]
 //	<Q-ID> <SEVERITY> <loc> "<question>" -> <why needed>
 //	RESOLVED <kind> <baseline id> "<title>"
+//	COVERAGE covered=<n> partial=<n> uncovered=<n> out_of_scope=<n>
+//	<REQ-ID> PARTIAL|UNCOVERED <spec loc> "<requirement>" -> <note>
+//	<SCOPE-ID> OUT_OF_SCOPE <plan loc> "<plan step>" -> <note>
 //	<PATCH-ID> "<title>" (diff available via --patch-out)
 //	CHECK <checklist id> pass=<n> fail=<n> na=<n>
 //	CHECK <checklist id> FAIL "<check>"
@@ -56,6 +59,30 @@ func Compact(r *review.Review) string {
 	if r.Delta != nil {
 		for _, e := range r.Delta.Resolved {
 			fmt.Fprintf(&b, "RESOLVED %s %s %q\n", e.Kind, e.ID, oneLine(e.Title))
+		}
+	}
+
+	if c := r.Coverage; c != nil {
+		s := c.Summary
+		fmt.Fprintf(&b, "COVERAGE covered=%d partial=%d uncovered=%d out_of_scope=%d\n", s.Covered, s.Partial, s.Uncovered, s.OutOfScope)
+		// Covered requirements are summarized by the count above; only
+		// the gaps get their own line.
+		for _, req := range c.Requirements {
+			if req.Status == review.CoverageCovered {
+				continue
+			}
+			fmt.Fprintf(&b, "%s %s %s %q", req.ID, req.Status, locs(req.SpecEvidence, r.Input.PlanFile), oneLine(req.Requirement))
+			if note := oneLine(req.Note); note != "" {
+				fmt.Fprintf(&b, " -> %s", note)
+			}
+			b.WriteByte('\n')
+		}
+		for _, item := range c.OutOfScope {
+			fmt.Fprintf(&b, "%s OUT_OF_SCOPE %s %q", item.ID, locs(item.PlanEvidence, r.Input.PlanFile), oneLine(item.PlanStep))
+			if note := oneLine(item.Note); note != "" {
+				fmt.Fprintf(&b, " -> %s", note)
+			}
+			b.WriteByte('\n')
 		}
 	}
 

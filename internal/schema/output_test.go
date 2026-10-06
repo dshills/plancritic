@@ -216,17 +216,22 @@ func TestOffendingItems(t *testing.T) {
 		{Path: "issues[3].id", Message: "x"},
 		{Path: "questions[0].evidence", Message: "x"},
 		{Path: "patches[2].diff_unified", Message: "x"},
+		{Path: "coverage.requirements[4].spec_evidence[0].line_end", Message: "x"},
+		{Path: "coverage.out_of_scope[0].plan_step", Message: "x"},
 		{Path: "summary.verdict", Message: "x"},
 	}
-	issues, questions, patches, other := OffendingItems(errs)
-	if !reflect.DeepEqual(issues, []int{1, 3}) {
-		t.Errorf("issues = %v", issues)
+	byKind, other := OffendingItems(errs)
+	if !reflect.DeepEqual(byKind["issues"], []int{1, 3}) {
+		t.Errorf("issues = %v", byKind["issues"])
 	}
-	if !reflect.DeepEqual(questions, []int{0}) {
-		t.Errorf("questions = %v", questions)
+	if !reflect.DeepEqual(byKind["questions"], []int{0}) {
+		t.Errorf("questions = %v", byKind["questions"])
 	}
-	if !reflect.DeepEqual(patches, []int{2}) {
-		t.Errorf("patches = %v", patches)
+	if !reflect.DeepEqual(byKind["patches"], []int{2}) {
+		t.Errorf("patches = %v", byKind["patches"])
+	}
+	if !reflect.DeepEqual(byKind["coverage.requirements"], []int{4}) || !reflect.DeepEqual(byKind["coverage.out_of_scope"], []int{0}) {
+		t.Errorf("coverage kinds = %v", byKind)
 	}
 	if len(other) != 1 || other[0].Path != "summary.verdict" {
 		t.Errorf("other = %v", other)
@@ -269,5 +274,108 @@ func TestAutoFixFillsMissingVerdict(t *testing.T) {
 	AutoFix(r, 10, nil)
 	if r.Summary.Verdict != review.VerdictWithClarifications {
 		t.Errorf("invalid verdict should be replaced, got %q", r.Summary.Verdict)
+	}
+}
+
+func TestModelOutputSchemaCoverageShape(t *testing.T) {
+	root := ModelOutputSchema(OutputShape{Coverage: true})
+	walkStrict(t, "coverage-root", root)
+	props := root["properties"].(map[string]any)
+	cov, ok := props["coverage"].(map[string]any)
+	if !ok {
+		t.Fatal("coverage shape should add a coverage object")
+	}
+	cp := cov["properties"].(map[string]any)
+	if _, ok := cp["requirements"]; !ok {
+		t.Error("coverage.requirements missing")
+	}
+	if _, ok := cp["out_of_scope"]; !ok {
+		t.Error("coverage.out_of_scope missing")
+	}
+	if _, ok := cp["summary"]; ok {
+		t.Error("summary is computed locally and must not be requested from the model")
+	}
+	if _, ok := ModelOutputSchema(OutputShape{})["properties"].(map[string]any)["coverage"]; ok {
+		t.Error("default shape must not request coverage")
+	}
+}
+
+func TestValidateCoverage(t *testing.T) {
+	specEv := func(start, end int) review.Evidence {
+		return review.Evidence{Source: "context", Path: "SPEC.md", LineStart: start, LineEnd: end}
+	}
+	planEvidence := func(start, end int) review.Evidence {
+		return review.Evidence{Source: "plan", Path: "plan.md", LineStart: start, LineEnd: end}
+	}
+	good := &review.Review{
+		Summary: review.Summary{Verdict: review.VerdictExecutable},
+		Coverage: &review.Coverage{
+			Requirements: []review.Requirement{
+				{ID: "REQ-0001", Requirement: "Auth", Status: review.CoverageCovered, SpecEvidence: []review.Evidence{specEv(3, 4)}, PlanEvidence: []review.Evidence{planEvidence(10, 12)}},
+				{ID: "REQ-0002", Requirement: "Audit log", Status: review.CoverageUncovered, SpecEvidence: []review.Evidence{specEv(9, 9)}},
+			},
+			OutOfScope: []review.ScopeItem{{ID: "SCOPE-0001", PlanStep: "Dark mode", PlanEvidence: []review.Evidence{planEvidence(30, 31)}}},
+		},
+	}
+	if errs := Validate(good, 40, map[string]int{"SPEC.md": 20}); len(errs) != 0 {
+		t.Fatalf("valid coverage should pass, got %v", errs)
+	}
+
+	bad := &review.Review{
+		Summary: review.Summary{Verdict: review.VerdictExecutable},
+		Coverage: &review.Coverage{
+			Requirements: []review.Requirement{
+				{ID: "REQ-0001", Requirement: "", Status: "MAYBE", SpecEvidence: []review.Evidence{planEvidence(3, 4)}},               // empty text, bad status, plan-sourced spec cite
+				{ID: "REQ-0001", Requirement: "Dup", Status: review.CoverageCovered, SpecEvidence: []review.Evidence{specEv(50, 50)}}, // dup id, beyond spec, covered w/o plan cite
+			},
+			OutOfScope: []review.ScopeItem{{ID: "", PlanStep: "", PlanEvidence: []review.Evidence{specEv(1, 1)}}},
+		},
+	}
+	errs := Validate(bad, 40, map[string]int{"SPEC.md": 20})
+	paths := map[string]bool{}
+	for _, e := range errs {
+		paths[e.Path] = true
+	}
+	for _, want := range []string{
+		"coverage.requirements[0].requirement", "coverage.requirements[0].status", "coverage.requirements[0].spec_evidence[0].source",
+		"coverage.requirements[1].id", "coverage.requirements[1].spec_evidence[0].line_end", "coverage.requirements[1].plan_evidence",
+		"coverage.out_of_scope[0].id", "coverage.out_of_scope[0].plan_step", "coverage.out_of_scope[0].plan_evidence[0].source",
+	} {
+		if !paths[want] {
+			t.Errorf("expected a validation error at %s; got %v", want, errs)
+		}
+	}
+}
+
+func TestAutoFixCoverage(t *testing.T) {
+	r := &review.Review{
+		Summary: review.Summary{Verdict: review.VerdictExecutable},
+		Coverage: &review.Coverage{
+			Requirements: []review.Requirement{
+				{ID: "", Requirement: "a", Status: review.CoverageUncovered, SpecEvidence: []review.Evidence{{Source: "context", Path: "SPEC.md", LineStart: 5, LineEnd: 99}}},
+				{ID: "REQ-0001", Requirement: "b", Status: review.CoverageUncovered, SpecEvidence: []review.Evidence{{Source: "context", Path: "SPEC.md", LineStart: 9, LineEnd: 7}}},
+			},
+			OutOfScope: []review.ScopeItem{{ID: "", PlanStep: "x", PlanEvidence: []review.Evidence{{Source: "plan", Path: "plan.md", LineStart: 0, LineEnd: 2}}}},
+		},
+	}
+	fixes := AutoFix(r, 40, map[string]int{"SPEC.md": 20})
+	c := r.Coverage
+	if c.Requirements[0].ID != "REQ-0002" || c.Requirements[1].ID != "REQ-0001" || c.OutOfScope[0].ID != "SCOPE-0001" {
+		t.Errorf("coverage IDs should be assigned without stealing existing ones: %+v", c)
+	}
+	if ev := c.Requirements[0].SpecEvidence[0]; ev.LineEnd != 20 {
+		t.Errorf("spec citation should be clamped to the spec length, got %+v", ev)
+	}
+	if ev := c.Requirements[1].SpecEvidence[0]; ev.LineStart != 7 || ev.LineEnd != 9 {
+		t.Errorf("inverted spec range should be swapped, got %+v", ev)
+	}
+	if ev := c.OutOfScope[0].PlanEvidence[0]; ev.LineStart != 1 {
+		t.Errorf("plan citation start should be raised to 1, got %+v", ev)
+	}
+	if len(fixes) != 5 {
+		t.Errorf("expected 5 fixes, got %d: %v", len(fixes), fixes)
+	}
+	if errs := Validate(r, 40, map[string]int{"SPEC.md": 20}); len(errs) != 0 {
+		t.Errorf("coverage should validate after AutoFix, got %v", errs)
 	}
 }

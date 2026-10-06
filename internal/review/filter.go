@@ -40,4 +40,19 @@ func StripQuotes(r *Review) {
 			r.Questions[i].Evidence[j].Quote = ""
 		}
 	}
+	if c := r.Coverage; c != nil {
+		for i := range c.Requirements {
+			for j := range c.Requirements[i].SpecEvidence {
+				c.Requirements[i].SpecEvidence[j].Quote = ""
+			}
+			for j := range c.Requirements[i].PlanEvidence {
+				c.Requirements[i].PlanEvidence[j].Quote = ""
+			}
+		}
+		for i := range c.OutOfScope {
+			for j := range c.OutOfScope[i].PlanEvidence {
+				c.OutOfScope[i].PlanEvidence[j].Quote = ""
+			}
+		}
+	}
 }

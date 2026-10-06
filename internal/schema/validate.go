@@ -112,6 +112,71 @@ func Validate(r *review.Review, planLineCount int, contextLineCounts map[string]
 		}
 	}
 
+	// Validate coverage (present only when a spec was supplied)
+	if c := r.Coverage; c != nil {
+		reqIDs := make(map[string]bool)
+		for i, req := range c.Requirements {
+			prefix := fmt.Sprintf("coverage.requirements[%d]", i)
+			if req.ID == "" {
+				errs = append(errs, ValidationError{prefix + ".id", "required"})
+			} else if reqIDs[req.ID] {
+				errs = append(errs, ValidationError{prefix + ".id", fmt.Sprintf("duplicate ID: %q", req.ID)})
+			} else {
+				reqIDs[req.ID] = true
+			}
+			if req.Requirement == "" {
+				errs = append(errs, ValidationError{prefix + ".requirement", "required"})
+			}
+			if !req.Status.Valid() {
+				errs = append(errs, ValidationError{prefix + ".status", fmt.Sprintf("invalid: %q", req.Status)})
+			}
+			if len(req.SpecEvidence) == 0 {
+				errs = append(errs, ValidationError{prefix + ".spec_evidence", "at least one spec citation required"})
+			}
+			for j, ev := range req.SpecEvidence {
+				where := fmt.Sprintf("%s.spec_evidence[%d]", prefix, j)
+				if ev.Source != "context" {
+					errs = append(errs, ValidationError{where + ".source", "spec citations must have source \"context\""})
+				}
+				errs = append(errs, validateEvidence(where, ev, planLineCount, contextLineCounts)...)
+			}
+			if req.Status != review.CoverageUncovered && len(req.PlanEvidence) == 0 {
+				errs = append(errs, ValidationError{prefix + ".plan_evidence", "a COVERED or PARTIAL requirement must cite the plan"})
+			}
+			for j, ev := range req.PlanEvidence {
+				where := fmt.Sprintf("%s.plan_evidence[%d]", prefix, j)
+				if ev.Source != "plan" {
+					errs = append(errs, ValidationError{where + ".source", "plan citations must have source \"plan\""})
+				}
+				errs = append(errs, validateEvidence(where, ev, planLineCount, contextLineCounts)...)
+			}
+		}
+		scopeIDs := make(map[string]bool)
+		for i, item := range c.OutOfScope {
+			prefix := fmt.Sprintf("coverage.out_of_scope[%d]", i)
+			if item.ID == "" {
+				errs = append(errs, ValidationError{prefix + ".id", "required"})
+			} else if scopeIDs[item.ID] {
+				errs = append(errs, ValidationError{prefix + ".id", fmt.Sprintf("duplicate ID: %q", item.ID)})
+			} else {
+				scopeIDs[item.ID] = true
+			}
+			if item.PlanStep == "" {
+				errs = append(errs, ValidationError{prefix + ".plan_step", "required"})
+			}
+			if len(item.PlanEvidence) == 0 {
+				errs = append(errs, ValidationError{prefix + ".plan_evidence", "at least one plan citation required"})
+			}
+			for j, ev := range item.PlanEvidence {
+				where := fmt.Sprintf("%s.plan_evidence[%d]", prefix, j)
+				if ev.Source != "plan" {
+					errs = append(errs, ValidationError{where + ".source", "plan citations must have source \"plan\""})
+				}
+				errs = append(errs, validateEvidence(where, ev, planLineCount, contextLineCounts)...)
+			}
+		}
+	}
+
 	return errs
 }
 

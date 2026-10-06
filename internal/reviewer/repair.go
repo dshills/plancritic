@@ -30,10 +30,11 @@ type repairBounds struct {
 }
 
 // repairReview asks the model to fix validation errors in rev. When every
-// error belongs to an indexed issue, question, or patch, only those items
-// are resent (a delta repair) and spliced back into rev. Otherwise the
-// whole output is resent. The result is validated again; a second
-// failure is a schema error (exit code 5).
+// error belongs to an indexed item (an issue, question, patch, or
+// coverage entry), only those items are resent (a delta repair) and
+// spliced back into rev. Otherwise the whole output is resent. The
+// result is validated again; a second failure is a schema error (exit
+// code 5). The returned usage covers the repair call even on failure.
 func repairReview(
 	ctx context.Context,
 	provider llm.Provider,
@@ -43,16 +44,16 @@ func repairReview(
 	bounds repairBounds,
 	verbose func(string, ...any),
 ) (review.Review, llm.Usage, error) {
-	issueIdx, qIdx, pIdx, other := schema.OffendingItems(errs)
-	delta := len(other) == 0 && len(issueIdx)+len(qIdx)+len(pIdx) > 0
+	byKind, other := schema.OffendingItems(errs)
+	delta := len(other) == 0 && len(byKind) > 0
 
 	var promptText string
 	if delta {
-		items, err := collectRepairItems(rev, issueIdx, qIdx, pIdx)
+		items, err := collectRepairItems(rev, byKind)
 		if err != nil {
 			return review.Review{}, llm.Usage{}, Errorf(5, "prepare repair: %v", err)
 		}
-		verbose("Delta repair: resending %d issue(s), %d question(s), %d patch(es)", len(issueIdx), len(qIdx), len(pIdx))
+		verbose("Delta repair: resending %d item(s) across %d kind(s)", len(items), len(byKind))
 		opts := prompt.DeltaRepairOpts{
 			Items:             items,
 			Errors:            errs,
@@ -100,7 +101,7 @@ func repairReview(
 	}
 
 	if delta {
-		merged, err := mergeRepaired(rev, rev2, issueIdx, qIdx, pIdx)
+		merged, err := mergeRepaired(rev, rev2, byKind)
 		if err != nil {
 			return review.Review{}, usage, Errorf(5, "repair response unusable: %v", err)
 		}
@@ -108,6 +109,9 @@ func repairReview(
 	}
 
 	errs2 := schema.Validate(&rev2, bounds.PlanLines, bounds.ContextLineCounts)
+	if bounds.Shape.Coverage && rev2.Coverage == nil {
+		errs2 = append(errs2, schema.ValidationError{Path: "coverage", Message: "still missing after repair"})
+	}
 	if len(errs2) > 0 {
 		fmt.Fprintln(os.Stderr, "Schema validation errors after repair:")
 		for _, e := range errs2 {
@@ -122,76 +126,127 @@ func repairReview(
 // case the model must see the source text to choose a correct citation.
 func needsSources(errs []schema.ValidationError) bool {
 	for _, e := range errs {
-		if strings.Contains(e.Path, ".evidence") {
+		if strings.Contains(e.Path, "evidence") {
 			return true
 		}
 	}
 	return false
 }
 
-func collectRepairItems(rev review.Review, issueIdx, qIdx, pIdx []int) ([]prompt.RepairItem, error) {
+// itemAt returns the item of the given kind at index i as a value to
+// marshal, or false when the index is out of range.
+func itemAt(rev review.Review, kind string, i int) (any, bool) {
+	switch kind {
+	case "issues":
+		if i < len(rev.Issues) {
+			return rev.Issues[i], true
+		}
+	case "questions":
+		if i < len(rev.Questions) {
+			return rev.Questions[i], true
+		}
+	case "patches":
+		if i < len(rev.Patches) {
+			return rev.Patches[i], true
+		}
+	case "coverage.requirements":
+		if rev.Coverage != nil && i < len(rev.Coverage.Requirements) {
+			return rev.Coverage.Requirements[i], true
+		}
+	case "coverage.out_of_scope":
+		if rev.Coverage != nil && i < len(rev.Coverage.OutOfScope) {
+			return rev.Coverage.OutOfScope[i], true
+		}
+	}
+	return nil, false
+}
+
+func collectRepairItems(rev review.Review, byKind map[string][]int) ([]prompt.RepairItem, error) {
 	var items []prompt.RepairItem
-	add := func(kind string, idx int, v any) error {
-		data, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		items = append(items, prompt.RepairItem{Kind: kind, Index: idx, JSON: string(data)})
-		return nil
-	}
-	for _, i := range issueIdx {
-		if i >= len(rev.Issues) {
-			return nil, fmt.Errorf("issues[%d] out of range", i)
-		}
-		if err := add("issues", i, rev.Issues[i]); err != nil {
-			return nil, err
-		}
-	}
-	for _, i := range qIdx {
-		if i >= len(rev.Questions) {
-			return nil, fmt.Errorf("questions[%d] out of range", i)
-		}
-		if err := add("questions", i, rev.Questions[i]); err != nil {
-			return nil, err
-		}
-	}
-	for _, i := range pIdx {
-		if i >= len(rev.Patches) {
-			return nil, fmt.Errorf("patches[%d] out of range", i)
-		}
-		if err := add("patches", i, rev.Patches[i]); err != nil {
-			return nil, err
+	for _, kind := range schema.RepairKinds {
+		for _, i := range byKind[kind] {
+			v, ok := itemAt(rev, kind, i)
+			if !ok {
+				return nil, fmt.Errorf("%s[%d] out of range", kind, i)
+			}
+			data, err := json.Marshal(v)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, prompt.RepairItem{Kind: kind, Index: i, JSON: string(data)})
 		}
 	}
 	return items, nil
 }
 
 // mergeRepaired splices the corrected items from fix into a copy of orig
-// at the offending indices, in order. fix must contain at least as many
-// items of each kind as were resent; extras are ignored.
-func mergeRepaired(orig, fix review.Review, issueIdx, qIdx, pIdx []int) (review.Review, error) {
-	if len(fix.Issues) < len(issueIdx) {
-		return review.Review{}, fmt.Errorf("repair returned %d issue(s), expected %d", len(fix.Issues), len(issueIdx))
-	}
-	if len(fix.Questions) < len(qIdx) {
-		return review.Review{}, fmt.Errorf("repair returned %d question(s), expected %d", len(fix.Questions), len(qIdx))
-	}
-	if len(fix.Patches) < len(pIdx) {
-		return review.Review{}, fmt.Errorf("repair returned %d patch(es), expected %d", len(fix.Patches), len(pIdx))
-	}
-
+// at the offending indices, kind by kind and in order. fix must contain
+// at least as many items of each kind as were resent; extras are ignored.
+func mergeRepaired(orig, fix review.Review, byKind map[string][]int) (review.Review, error) {
 	merged := orig
 	merged.Issues = append([]review.Issue(nil), orig.Issues...)
 	merged.Questions = append([]review.Question(nil), orig.Questions...)
 	merged.Patches = append([]review.Patch(nil), orig.Patches...)
-	for n, i := range issueIdx {
-		merged.Issues[i] = fix.Issues[n]
+	if orig.Coverage != nil {
+		cov := *orig.Coverage
+		cov.Requirements = append([]review.Requirement(nil), orig.Coverage.Requirements...)
+		cov.OutOfScope = append([]review.ScopeItem(nil), orig.Coverage.OutOfScope...)
+		merged.Coverage = &cov
 	}
-	for n, i := range qIdx {
-		merged.Questions[i] = fix.Questions[n]
+
+	short := func(kind string, got, want int) error {
+		return fmt.Errorf("repair returned %d %s item(s), expected %d", got, kind, want)
 	}
-	for n, i := range pIdx {
-		merged.Patches[i] = fix.Patches[n]
+	for _, kind := range schema.RepairKinds {
+		idx := byKind[kind]
+		if len(idx) == 0 {
+			continue
+		}
+		switch kind {
+		case "issues":
+			if len(fix.Issues) < len(idx) {
+				return review.Review{}, short(kind, len(fix.Issues), len(idx))
+			}
+			for n, i := range idx {
+				merged.Issues[i] = fix.Issues[n]
+			}
+		case "questions":
+			if len(fix.Questions) < len(idx) {
+				return review.Review{}, short(kind, len(fix.Questions), len(idx))
+			}
+			for n, i := range idx {
+				merged.Questions[i] = fix.Questions[n]
+			}
+		case "patches":
+			if len(fix.Patches) < len(idx) {
+				return review.Review{}, short(kind, len(fix.Patches), len(idx))
+			}
+			for n, i := range idx {
+				merged.Patches[i] = fix.Patches[n]
+			}
+		case "coverage.requirements":
+			if fix.Coverage == nil || len(fix.Coverage.Requirements) < len(idx) {
+				got := 0
+				if fix.Coverage != nil {
+					got = len(fix.Coverage.Requirements)
+				}
+				return review.Review{}, short(kind, got, len(idx))
+			}
+			for n, i := range idx {
+				merged.Coverage.Requirements[i] = fix.Coverage.Requirements[n]
+			}
+		case "coverage.out_of_scope":
+			if fix.Coverage == nil || len(fix.Coverage.OutOfScope) < len(idx) {
+				got := 0
+				if fix.Coverage != nil {
+					got = len(fix.Coverage.OutOfScope)
+				}
+				return review.Review{}, short(kind, got, len(idx))
+			}
+			for n, i := range idx {
+				merged.Coverage.OutOfScope[i] = fix.Coverage.OutOfScope[n]
+			}
+		}
 	}
 	return merged, nil
 }

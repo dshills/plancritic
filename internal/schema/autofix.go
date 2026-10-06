@@ -54,6 +54,32 @@ func AutoFix(r *review.Review, planLineCount int, contextLineCounts map[string]i
 	}
 	fixes = append(fixes, fixIDs(patchIDs, "PATCH", "patches")...)
 
+	if c := r.Coverage; c != nil {
+		reqIDs := make([]*string, len(c.Requirements))
+		for i := range c.Requirements {
+			reqIDs[i] = &c.Requirements[i].ID
+		}
+		fixes = append(fixes, fixIDs(reqIDs, "REQ", "coverage.requirements")...)
+		for i := range c.Requirements {
+			for j := range c.Requirements[i].SpecEvidence {
+				fixes = append(fixes, fixEvidence(&c.Requirements[i].SpecEvidence[j], fmt.Sprintf("coverage.requirements[%d].spec_evidence[%d]", i, j), planLineCount, contextLineCounts)...)
+			}
+			for j := range c.Requirements[i].PlanEvidence {
+				fixes = append(fixes, fixEvidence(&c.Requirements[i].PlanEvidence[j], fmt.Sprintf("coverage.requirements[%d].plan_evidence[%d]", i, j), planLineCount, contextLineCounts)...)
+			}
+		}
+		scopeIDs := make([]*string, len(c.OutOfScope))
+		for i := range c.OutOfScope {
+			scopeIDs[i] = &c.OutOfScope[i].ID
+		}
+		fixes = append(fixes, fixIDs(scopeIDs, "SCOPE", "coverage.out_of_scope")...)
+		for i := range c.OutOfScope {
+			for j := range c.OutOfScope[i].PlanEvidence {
+				fixes = append(fixes, fixEvidence(&c.OutOfScope[i].PlanEvidence[j], fmt.Sprintf("coverage.out_of_scope[%d].plan_evidence[%d]", i, j), planLineCount, contextLineCounts)...)
+			}
+		}
+	}
+
 	return fixes
 }
 
@@ -127,15 +153,19 @@ func fixEvidence(ev *review.Evidence, where string, planLineCount int, contextLi
 	return fixes
 }
 
-var itemPathPattern = regexp.MustCompile(`^(issues|questions|patches)\[(\d+)\]`)
+// RepairKinds lists the top-level item collections a delta repair can
+// resend, in the order they appear in a repair prompt and response.
+var RepairKinds = []string{"issues", "questions", "patches", "coverage.requirements", "coverage.out_of_scope"}
+
+var itemPathPattern = regexp.MustCompile(`^(issues|questions|patches|coverage\.requirements|coverage\.out_of_scope)\[(\d+)\]`)
 
 // OffendingItems groups validation errors by the top-level item they
-// belong to. The returned index slices are sorted and de-duplicated.
-// Errors that do not belong to an indexed item (e.g. summary.verdict)
-// are returned in other; callers that cannot repair those in isolation
-// should fall back to a whole-output repair.
-func OffendingItems(errs []ValidationError) (issues, questions, patches []int, other []ValidationError) {
-	seen := map[string]map[int]bool{"issues": {}, "questions": {}, "patches": {}}
+// belong to, keyed by kind (see RepairKinds). Each index slice is
+// sorted and de-duplicated. Errors that do not belong to an indexed
+// item are returned in other; callers that cannot repair those in
+// isolation should fall back to a whole-output repair.
+func OffendingItems(errs []ValidationError) (byKind map[string][]int, other []ValidationError) {
+	seen := make(map[string]map[int]bool)
 	for _, e := range errs {
 		m := itemPathPattern.FindStringSubmatch(e.Path)
 		if m == nil {
@@ -147,15 +177,19 @@ func OffendingItems(errs []ValidationError) (issues, questions, patches []int, o
 			other = append(other, e)
 			continue
 		}
+		if seen[m[1]] == nil {
+			seen[m[1]] = make(map[int]bool)
+		}
 		seen[m[1]][idx] = true
 	}
-	collect := func(kind string) []int {
-		out := make([]int, 0, len(seen[kind]))
-		for i := range seen[kind] {
+	byKind = make(map[string][]int, len(seen))
+	for kind, idxs := range seen {
+		out := make([]int, 0, len(idxs))
+		for i := range idxs {
 			out = append(out, i)
 		}
 		sort.Ints(out)
-		return out
+		byKind[kind] = out
 	}
-	return collect("issues"), collect("questions"), collect("patches"), other
+	return byKind, other
 }

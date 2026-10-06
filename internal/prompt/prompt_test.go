@@ -329,3 +329,33 @@ func TestBuildSeverityThresholdInstruction(t *testing.T) {
 		t.Errorf("critical threshold instruction missing:\n%s", crit)
 	}
 }
+
+func TestSpecRoleInPrompt(t *testing.T) {
+	p := &plan.Plan{FilePath: "PLAN.md", Lines: []string{"step"}}
+	spec := &pctx.File{FilePath: "docs/SPEC.md", Lines: []string{"must do x"}, Role: pctx.RoleSpec}
+	other := &pctx.File{FilePath: "tree.txt", Lines: []string{"a/"}}
+	text := Build(BuildOpts{Plan: p, Contexts: []*pctx.File{spec, other}, Shape: schema.OutputShape{Coverage: true}})
+	for _, want := range []string{
+		`##PLANCRITIC_CONTEXT_BEGIN path="SPEC.md" role="spec"##`,
+		`##PLANCRITIC_CONTEXT_BEGIN path="tree.txt"##`,
+		"## Specification Coverage",
+		`"coverage": {`,
+		`"status": "COVERED" | "PARTIAL" | "UNCOVERED"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	plain := Build(BuildOpts{Plan: p, Contexts: []*pctx.File{other}})
+	if strings.Contains(plain, "Specification Coverage") || strings.Contains(plain, `"coverage"`) {
+		t.Error("without a spec the prompt must not mention coverage")
+	}
+	delta := BuildDeltaRepair(DeltaRepairOpts{
+		Items:    []RepairItem{{Kind: "coverage.requirements", Index: 2, JSON: "{}"}},
+		Shape:    schema.OutputShape{Coverage: true},
+		PlanName: "PLAN.md", PlanLines: 1,
+	})
+	if !strings.Contains(delta, `"coverage.requirements" exactly 1, "coverage.out_of_scope" exactly 0`) || !strings.Contains(delta, "### coverage.requirements[2]") {
+		t.Errorf("delta repair should count coverage kinds:\n%s", delta)
+	}
+}

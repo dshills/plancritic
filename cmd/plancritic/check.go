@@ -24,6 +24,8 @@ type checkFlags struct {
 	noQuotes          bool
 	quiet             bool
 	contextPaths      []string
+	specPath          string
+	planFlag          string
 	profileName       string
 	strict            bool
 	providerName      string
@@ -56,13 +58,17 @@ func newCheckCmd() *cobra.Command {
 	f := &checkFlags{}
 
 	cmd := &cobra.Command{
-		Use:   "check <plan-file>",
+		Use:   "check [plan-file]",
 		Short: "Analyze a plan and produce a review",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Check if seed was explicitly set
 			f.hasSeed = cmd.Flags().Changed("seed")
-			return runCheck(cmd.Context(), args[0], f)
+			planPath, err := resolvePlanPath(args, f.planFlag)
+			if err != nil {
+				return err
+			}
+			return runCheck(cmd.Context(), planPath, f)
 		},
 	}
 
@@ -71,7 +77,9 @@ func newCheckCmd() *cobra.Command {
 	flags.StringVar(&f.out, "out", "", "Output file path (default: stdout)")
 	flags.BoolVar(&f.noQuotes, "no-quotes", envBool("PLANCRITIC_NO_QUOTES", false), "Omit evidence quotes from json/md output (line references are kept)")
 	flags.BoolVar(&f.quiet, "quiet", envBool("PLANCRITIC_QUIET", false), "Print only the one-line verdict summary to stdout (pair with --out)")
+	flags.StringVar(&f.planFlag, "plan", "", "Plan file path (alternative to the positional argument)")
 	flags.StringSliceVar(&f.contextPaths, "context", nil, "Context file paths (may be repeated)")
+	flags.StringVar(&f.specPath, "spec", envStr("PLANCRITIC_SPEC", ""), "Specification the plan implements; adds a requirement-by-requirement coverage matrix to the result")
 	flags.StringVar(&f.profileName, "profile", envStr("PLANCRITIC_PROFILE", "general"), "Profile name")
 	flags.BoolVar(&f.strict, "strict", envBool("PLANCRITIC_STRICT", false), "Enable strict grounding mode")
 	flags.StringVar(&f.providerName, "provider", envStr("PLANCRITIC_PROVIDER", ""), "LLM provider: anthropic, openai, or gemini")
@@ -171,6 +179,7 @@ func runCheck(ctx context.Context, planPath string, f *checkFlags) error {
 func runReview(parentCtx context.Context, planPath string, f *checkFlags) (review.Review, error) {
 	rev, err := reviewer.Run(parentCtx, planPath, reviewer.Options{
 		ContextPaths:      f.contextPaths,
+		SpecPath:          f.specPath,
 		ProfileName:       f.profileName,
 		Strict:            f.strict,
 		ProviderName:      f.providerName,
@@ -299,4 +308,22 @@ func verdictMeetsThreshold(verdict review.Verdict, failOn string) (bool, error) 
 		return false, fmt.Errorf("unknown --fail-on value: %q (valid: executable, clarifications, not_executable, critical)", failOn)
 	}
 	return vl >= tl, nil
+}
+
+// resolvePlanPath accepts the plan either as the positional argument or
+// via --plan (agents and wrappers tend to reach for the flag), and
+// rejects both or neither.
+func resolvePlanPath(args []string, planFlag string) (string, error) {
+	switch {
+	case len(args) == 1 && planFlag != "":
+		if args[0] == planFlag {
+			return planFlag, nil
+		}
+		return "", exitError(3, "plan given twice: positional %q and --plan %q", args[0], planFlag)
+	case len(args) == 1:
+		return args[0], nil
+	case planFlag != "":
+		return planFlag, nil
+	}
+	return "", exitError(3, "plan file required: pass it as the argument or with --plan")
 }

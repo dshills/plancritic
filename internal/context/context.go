@@ -14,7 +14,14 @@ type File struct {
 	Raw      string
 	Lines    []string
 	Hash     string
+	// Role marks what the file is to the review. Empty is plain
+	// grounding context; "spec" is the specification the plan must
+	// implement, which turns on the coverage matrix.
+	Role string
 }
+
+// RoleSpec is the Role of the specification file given with --spec.
+const RoleSpec = "spec"
 
 // Load reads a context file and computes its SHA-256 hash.
 func Load(path string) (*File, error) {
