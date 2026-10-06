@@ -1004,7 +1004,7 @@ func TestRunCheckDeltaRepairSendsSourcesForEvidenceErrors(t *testing.T) {
 	if err := runCheck(context.Background(), planPath, f); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(mock.prompts[1], "L002: 1. Step A") {
+	if !strings.Contains(mock.prompts[1], "2|1. Step A") {
 		t.Error("evidence repair should include the line-numbered plan")
 	}
 	// A severity-only error needs no sources (see the merge test above).

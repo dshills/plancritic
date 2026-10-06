@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -41,27 +42,21 @@ func Load(path string) (*Plan, error) {
 	}, nil
 }
 
-// LineNumbered returns the plan text with each line prefixed by L-padded numbers.
-// The width adjusts based on total line count.
+// LineNumbered returns the plan text with each line prefixed by its
+// 1-based number and a bar ("12|text"). The compact prefix costs about
+// 2.5 fewer tokens per line than the earlier zero-padded "L012: " form
+// (measured: 19,834 vs 17,173 tokens for this repository's PLAN.md plus
+// SPEC.md), and because every line starts with a digit the content still
+// cannot forge a ##PLANCRITIC_* delimiter.
 func LineNumbered(p *Plan) string {
-	width := lineNumberWidth(len(p.Lines))
-	format := fmt.Sprintf("L%%0%dd: %%s\n", width)
 	var b strings.Builder
 	for i, line := range p.Lines {
-		fmt.Fprintf(&b, format, i+1, line)
+		b.WriteString(strconv.Itoa(i + 1))
+		b.WriteByte('|')
+		b.WriteString(line)
+		b.WriteByte('\n')
 	}
 	return b.String()
-}
-
-func lineNumberWidth(totalLines int) int {
-	switch {
-	case totalLines >= 10000:
-		return 5
-	case totalLines >= 1000:
-		return 4
-	default:
-		return 3
-	}
 }
 
 var (

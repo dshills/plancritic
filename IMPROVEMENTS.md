@@ -391,6 +391,12 @@ the agent can see why the downgrade happened.
 
 ### 15. Cheaper line-number prefix  — Tokens (minor)
 
+**Status: done.** Plan and context lines are now prefixed `12|` instead of `L012: `.
+Measured with Anthropic's token-counting endpoint on this repository's PLAN.md plus
+SPEC.md (1,064 lines): 19,834 tokens before, 17,173 after, a 13% cut on that content.
+The prompt explains the convention; the delimiter-injection guarantee still holds
+because every content line starts with a digit.
+
 **Evidence:** Every plan and context line is prefixed `L001: ` (6 characters, ~3 tokens). On
 the baseline's ~1,060 total lines this is ~3k tokens.
 

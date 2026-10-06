@@ -46,11 +46,8 @@ func TestLoadMissingFile(t *testing.T) {
 func TestLineNumbered(t *testing.T) {
 	p := &Plan{Lines: []string{"first", "second", "third"}}
 	got := LineNumbered(p)
-	if !strings.Contains(got, "L001: first") {
-		t.Errorf("expected L001 prefix, got:\n%s", got)
-	}
-	if !strings.Contains(got, "L003: third") {
-		t.Errorf("expected L003 prefix, got:\n%s", got)
+	if got != "1|first\n2|second\n3|third\n" {
+		t.Errorf("expected compact N| prefixes, got:\n%s", got)
 	}
 }
 

@@ -29,7 +29,7 @@ func TestBuild(t *testing.T) {
 		"plan critic",
 		"ONLY valid JSON",
 		`##PLANCRITIC_PLAN_BEGIN path="plan.md"##`,
-		"L001:",
+		"1|",
 		"## Profile: general",
 		"Return at most 50 issues",
 	}
@@ -293,7 +293,7 @@ func TestBuildDeltaRepairIncludesSourcesOnlyWhenGiven(t *testing.T) {
 	c := &pctx.File{FilePath: "docs/SPEC.md", Lines: []string{"spec line"}}
 	base.Sources = RenderSources(p, []*pctx.File{c})
 	text := BuildDeltaRepair(base)
-	for _, want := range []string{"## Sources", `##PLANCRITIC_CONTEXT_BEGIN path="SPEC.md"##`, "L001: spec line", `##PLANCRITIC_PLAN_BEGIN path="PLAN.md"##`, "L002: 1. Step"} {
+	for _, want := range []string{"## Sources", `##PLANCRITIC_CONTEXT_BEGIN path="SPEC.md"##`, "1|spec line", `##PLANCRITIC_PLAN_BEGIN path="PLAN.md"##`, "2|1. Step"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("delta repair with sources missing %q", want)
 		}

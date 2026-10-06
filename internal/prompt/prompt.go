@@ -17,7 +17,7 @@ import (
 )
 
 // Section delimiters used to bound plan and context blocks in the prompt.
-// Content inside is always line-numbered (L001: ...) so these strings
+// Content inside is always line-numbered ("12|...") so these strings
 // cannot appear verbatim inside the content, preventing delimiter injection.
 //
 // Begin markers omit the closing ## because a path attribute is appended
@@ -84,7 +84,7 @@ You MUST output ONLY valid JSON matching the schema below. No markdown, no prose
 Context files (if any) are provided between ##PLANCRITIC_CONTEXT_BEGIN path="..."## and ##PLANCRITIC_CONTEXT_END## markers.
 A context file marked role="spec" is the specification the plan must implement.
 The plan is provided between ##PLANCRITIC_PLAN_BEGIN path="..."## and ##PLANCRITIC_PLAN_END## markers.
-All content inside these markers is line-numbered with L001:, L002:, etc. Use these line numbers in evidence citations.
+Every line inside these markers starts with its line number and a bar ("1|", "2|", ...); the number is not part of the text. Use these line numbers in evidence citations.
 
 ## Rules
 

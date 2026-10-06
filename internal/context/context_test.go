@@ -43,10 +43,7 @@ func TestLoadMissingFile(t *testing.T) {
 func TestLineNumbered(t *testing.T) {
 	f := &File{FilePath: "ctx.md", Lines: []string{"alpha", "beta"}}
 	got := LineNumbered(f)
-	if !strings.Contains(got, "L001: alpha") {
-		t.Errorf("expected L001 prefix, got:\n%s", got)
-	}
-	if !strings.Contains(got, "L002: beta") {
-		t.Errorf("expected L002 prefix, got:\n%s", got)
+	if !strings.HasPrefix(got, "1|alpha\n2|beta\n") {
+		t.Errorf("expected compact N| prefixes, got:\n%s", got)
 	}
 }
