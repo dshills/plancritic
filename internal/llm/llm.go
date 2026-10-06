@@ -37,6 +37,30 @@ type Provider interface {
 	Name() string
 }
 
+// ModelDefaulter is an optional interface for providers that pick a
+// default model when Settings.Model is empty. Callers that need a stable
+// identity for the effective model (e.g. result-cache keys) use it so
+// two providers of the same name but different defaults never collide.
+type ModelDefaulter interface {
+	DefaultModel() string
+}
+
+// EffectiveModel returns the model a request through p will actually
+// use: an explicit override wrapper, else requested, else the provider's
+// own default when it exposes one, else "".
+func EffectiveModel(p Provider, requested string) string {
+	if o := OverrideModel(p); o != "" {
+		return o
+	}
+	if requested != "" {
+		return requested
+	}
+	if d, ok := Unwrap(p).(ModelDefaulter); ok {
+		return d.DefaultModel()
+	}
+	return ""
+}
+
 // Segment is a piece of prompt text that may optionally mark a cache
 // breakpoint for providers that support prompt caching (e.g. Anthropic).
 // Providers that don't support caching concatenate all segments into a

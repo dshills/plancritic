@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/dshills/plancritic/internal/profile"
 	"github.com/dshills/plancritic/internal/prompt"
 	"github.com/dshills/plancritic/internal/redact"
+	"github.com/dshills/plancritic/internal/resultcache"
 	"github.com/dshills/plancritic/internal/review"
 	"github.com/dshills/plancritic/internal/schema"
 )
@@ -45,10 +47,16 @@ type Options struct {
 	RedactEnabled     bool
 	NoCache           bool
 	CacheTTL          string
-	Verbose           bool
-	Debug             bool
-	DebugDir          string
-	Provider          llm.Provider
+	// NoResultCache disables only the local on-disk result cache;
+	// provider-side prompt caching is unaffected. NoCache disables both.
+	NoResultCache bool
+	// ResultCacheDir overrides where cached reviews are stored. Empty
+	// selects resultcache.DefaultDir, which honors PLANCRITIC_CACHE_DIR.
+	ResultCacheDir string
+	Verbose        bool
+	Debug          bool
+	DebugDir       string
+	Provider       llm.Provider
 }
 
 func Run(parentCtx context.Context, planPath string, f Options, version string) (review.Review, error) {
@@ -162,6 +170,85 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			verbose("Warning: failed to write debug prompt: %v", err)
 		} else {
 			verbose("Wrote debug prompt to %s", debugPath)
+		}
+	}
+
+	// 8b. Output-only post-processing, shared by the fresh and cached
+	// paths. Severity filtering and truncation are applied here rather
+	// than before caching so a cached review can honor whatever output
+	// flags the next invocation passes.
+	finalize := func(rev review.Review, cached bool) review.Review {
+		rev.Issues = review.FilterBySeverity(rev.Issues, f.SeverityThreshold)
+		rev.Questions = review.FilterQuestionsBySeverity(rev.Questions, f.SeverityThreshold)
+		review.Truncate(&rev, maxIssues, maxQuestions)
+		rev.Summary = review.ComputeSummary(rev.Issues)
+
+		rev.Tool = "plancritic"
+		rev.Version = version
+		rev.Input = review.Input{
+			PlanFile: filepath.Base(planPath),
+			PlanHash: p.Hash,
+			Profile:  f.ProfileName,
+			Strict:   f.Strict,
+		}
+		rev.Input.ContextFiles = nil
+		for _, cf := range contexts {
+			rev.Input.ContextFiles = append(rev.Input.ContextFiles, review.ContextFile{
+				Path: filepath.Base(cf.FilePath),
+				Hash: cf.Hash,
+			})
+		}
+		modelName := f.Model
+		if modelName == "" {
+			modelName = "(default)"
+		}
+		rev.Meta = review.Meta{
+			Model:       modelProvider.Name() + "/" + modelName,
+			Temperature: f.Temperature,
+			Cached:      cached,
+		}
+		return rev
+	}
+
+	// 8c. Local result cache. The key covers the exact prompt text, which
+	// already encodes the redacted plan and contexts, profile, strict
+	// mode, step index, and caps, plus every other setting that shapes
+	// the provider's answer. Output-only flags are deliberately excluded.
+	var resultStore *resultcache.Store
+	var resultKey string
+	if !f.NoCache && !f.NoResultCache {
+		dir := f.ResultCacheDir
+		if dir == "" {
+			var dirErr error
+			dir, dirErr = resultcache.DefaultDir()
+			if dirErr != nil {
+				verbose("Result cache unavailable: %v", dirErr)
+			}
+		}
+		if dir != "" {
+			seedKey := ""
+			if f.HasSeed {
+				seedKey = strconv.Itoa(f.Seed)
+			}
+			resultStore = resultcache.Open(dir, resultcache.DefaultTTL)
+			// Key on the model the provider will actually use, not the
+			// (possibly empty) requested string, so a provider default
+			// change can never serve a review produced by another model.
+			resultKey = resultcache.Key(
+				"v1",
+				version,
+				modelProvider.Name(),
+				llm.EffectiveModel(modelProvider, f.Model),
+				strconv.FormatFloat(f.Temperature, 'g', -1, 64),
+				seedKey,
+				strconv.Itoa(f.MaxTokens),
+				promptText,
+			)
+			if cached, ok := resultStore.Get(resultKey); ok {
+				verbose("Result cache hit (%s), skipping LLM call", resultKey[:12])
+				return finalize(cached, true), nil
+			}
+			verbose("Result cache miss (%s)", resultKey[:12])
 		}
 	}
 
@@ -311,40 +398,16 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		}
 	}
 
-	// Apply severity threshold filter before truncation so the cap applies
-	// to the user-visible set and the truncation notice is never filtered out.
-	rev.Issues = review.FilterBySeverity(rev.Issues, f.SeverityThreshold)
-	rev.Questions = review.FilterQuestionsBySeverity(rev.Questions, f.SeverityThreshold)
-	review.Truncate(&rev, maxIssues, maxQuestions)
-
-	// Compute deterministic summary from final issue list
-	rev.Summary = review.ComputeSummary(rev.Issues)
-
-	// Fill metadata
-	rev.Tool = "plancritic"
-	rev.Version = version
-	rev.Input = review.Input{
-		PlanFile: filepath.Base(planPath),
-		PlanHash: p.Hash,
-		Profile:  f.ProfileName,
-		Strict:   f.Strict,
-	}
-	for _, cf := range contexts {
-		rev.Input.ContextFiles = append(rev.Input.ContextFiles, review.ContextFile{
-			Path: filepath.Base(cf.FilePath),
-			Hash: cf.Hash,
-		})
-	}
-	modelName := f.Model
-	if modelName == "" {
-		modelName = "(default)"
-	}
-	rev.Meta = review.Meta{
-		Model:       modelProvider.Name() + "/" + modelName,
-		Temperature: f.Temperature,
+	// Persist the validated, sorted, grounding-checked review before the
+	// output-only filters run (see finalize). Write failures are logged,
+	// never fatal: the cache is an optimization.
+	if resultStore != nil {
+		if err := resultStore.Put(resultKey, rev); err != nil {
+			verbose("Result cache write failed: %v", err)
+		}
 	}
 
-	return rev, nil
+	return finalize(rev, false), nil
 }
 
 type Error struct {

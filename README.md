@@ -117,7 +117,8 @@ Common overrides:
 | `--patch-out <path>` | — | Write suggested plan edits as unified diff |
 | `--fail-on <level>` | — | Exit code 2 if verdict meets/exceeds this level |
 | `--redact` | true | Redact secrets before sending to model |
-| `--offline` | false | Fail if no provider is configured |
+| `--no-cache` | false | Disable all caching: provider prompt caches and the local result cache |
+| `--no-result-cache` | false | Always call the model, even when an identical run is cached locally |
 | `--verbose` | false | Print pipeline steps |
 | `--debug` | false | Save redacted prompt to local file |
 
@@ -144,6 +145,23 @@ With `--strict`, the model treats everything not present in the plan or context 
 - A post-check scans descriptions for phrases suggesting fabricated repo knowledge and downgrades those issues to `UNVERIFIED`.
 
 Use strict mode when reviewing plans for unfamiliar codebases or when you want conservative, citation-only output.
+
+## Result Cache
+
+Every completed review is stored locally, keyed by a hash of the exact prompt
+(redacted plan and context text, profile, strict mode, caps) together with the
+provider, model, temperature, seed, and max-tokens settings. Re-running with
+identical inputs returns the stored review in milliseconds with no provider
+call and no tokens billed; the output carries `"meta": {"cached": true}`.
+
+Output-only flags (`--format`, `--out`, `--severity-threshold`, `--patch-out`,
+`--fail-on`) are applied on top of the cached review, so changing them does not
+trigger a new model call. Any change to the plan, context files, profile, or
+model settings produces a new key and a fresh review.
+
+- Entries expire after 7 days.
+- Location: `$XDG_CACHE_HOME/plancritic/results` (Linux), `~/Library/Caches/plancritic/results` (macOS). Set `PLANCRITIC_CACHE_DIR` to relocate it.
+- `--no-result-cache` (or `PLANCRITIC_NO_RESULT_CACHE=1`) forces a model call for one run. `--no-cache` disables this cache and provider-side prompt caching together.
 
 ## Output Format
 

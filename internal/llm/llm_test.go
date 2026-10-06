@@ -1064,3 +1064,26 @@ func TestOpenAISeedOmittedWhenNil(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEffectiveModel(t *testing.T) {
+	anth := &AnthropicProvider{}
+	tests := []struct {
+		name      string
+		p         Provider
+		requested string
+		want      string
+	}{
+		{"provider default", anth, "", anthropicDefaultModel},
+		{"requested wins over default", anth, "claude-x", "claude-x"},
+		{"override wrapper wins", &modelOverride{Provider: anth, model: "claude-y"}, "ignored", "claude-y"},
+		{"mock has no default", &MockProvider{}, "", ""},
+		{"mock with requested", &MockProvider{}, "m", "m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EffectiveModel(tt.p, tt.requested); got != tt.want {
+				t.Errorf("EffectiveModel = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

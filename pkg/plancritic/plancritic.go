@@ -2,7 +2,6 @@ package plancritic
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,9 +59,15 @@ type CheckOptions struct {
 	RedactEnabled     bool
 	NoCache           bool
 	CacheTTL          string
-	Verbose           bool
-	Debug             bool
-	DebugDir          string
+	// NoResultCache bypasses the local on-disk result cache without
+	// affecting provider-side prompt caching. NoCache disables both.
+	NoResultCache bool
+	// ResultCacheDir overrides the result cache location; empty uses the
+	// default (honoring PLANCRITIC_CACHE_DIR).
+	ResultCacheDir string
+	Verbose        bool
+	Debug          bool
+	DebugDir       string
 }
 
 type CheckResult struct {
@@ -118,6 +123,8 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 		RedactEnabled:     opts.RedactEnabled,
 		NoCache:           opts.NoCache,
 		CacheTTL:          opts.CacheTTL,
+		NoResultCache:     opts.NoResultCache,
+		ResultCacheDir:    opts.ResultCacheDir,
 		Verbose:           opts.Verbose,
 		Debug:             opts.Debug,
 		DebugDir:          opts.DebugDir,
@@ -234,65 +241,92 @@ func ProfileNames() []string {
 	return names
 }
 
+// materializeInputs turns in-memory plan and context documents into
+// files the reviewer can read. All documents go into one private temp
+// directory under their own (sanitized, de-duplicated) basenames.
+//
+// Basenames are deliberately deterministic: they appear in the prompt
+// and in the output's input block, so a random temp name would change
+// the result-cache key on every call and label the review with a
+// meaningless file name.
 func materializeInputs(opts CheckOptions) (string, []string, func(), error) {
+	noop := func() {}
 	if opts.PlanPath == "" && strings.TrimSpace(opts.PlanText) == "" {
-		return "", nil, func() {}, fmt.Errorf("plan_path or plan_text is required")
+		return "", nil, noop, fmt.Errorf("plan_path or plan_text is required")
 	}
 	if opts.PlanPath != "" && opts.PlanText != "" {
-		return "", nil, func() {}, fmt.Errorf("plan_path and plan_text are mutually exclusive")
+		return "", nil, noop, fmt.Errorf("plan_path and plan_text are mutually exclusive")
 	}
 
-	var cleanupPaths []string
-	cleanup := func() {
-		for _, path := range cleanupPaths {
-			_ = os.Remove(path)
+	contextPaths := append([]string(nil), opts.ContextPaths...)
+	if opts.PlanText == "" && len(opts.ContextDocuments) == 0 {
+		return opts.PlanPath, contextPaths, noop, nil
+	}
+
+	dir, err := os.MkdirTemp("", "plancritic-")
+	if err != nil {
+		return "", nil, noop, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+
+	used := make(map[string]bool)
+	write := func(name, fallback, text string) (string, error) {
+		base := uniqueBasename(safeBasename(name, fallback), used)
+		path := filepath.Join(dir, base)
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			return "", err
 		}
+		return path, nil
 	}
 
 	planPath := opts.PlanPath
 	if opts.PlanText != "" {
-		path, err := writeTempText(opts.PlanName, opts.PlanText)
+		planPath, err = write(opts.PlanName, "PLAN.md", opts.PlanText)
 		if err != nil {
 			cleanup()
-			return "", nil, func() {}, err
+			return "", nil, noop, err
 		}
-		cleanupPaths = append(cleanupPaths, path)
-		planPath = path
 	}
-
-	contextPaths := append([]string(nil), opts.ContextPaths...)
-	for _, doc := range opts.ContextDocuments {
-		path, err := writeTempText(doc.Name, doc.Text)
+	for i, doc := range opts.ContextDocuments {
+		path, err := write(doc.Name, fmt.Sprintf("context-%d.md", i+1), doc.Text)
 		if err != nil {
 			cleanup()
-			return "", nil, func() {}, err
+			return "", nil, noop, err
 		}
-		cleanupPaths = append(cleanupPaths, path)
 		contextPaths = append(contextPaths, path)
 	}
 	return planPath, contextPaths, cleanup, nil
 }
 
-func writeTempText(name, text string) (string, error) {
-	if name == "" {
-		name = "PLAN.md"
+// safeBasename reduces a caller-supplied document name to a single path
+// component, substituting fallback when nothing usable remains and
+// defaulting the extension to .md.
+func safeBasename(name, fallback string) string {
+	base := filepath.Base(strings.ReplaceAll(strings.TrimSpace(name), "\\", "/"))
+	switch base {
+	case "", ".", "..", "/":
+		base = fallback
 	}
-	ext := filepath.Ext(name)
-	if ext == "" {
-		ext = ".md"
+	if filepath.Ext(base) == "" {
+		base += ".md"
 	}
-	sum := sha256.Sum256([]byte(name))
-	pattern := fmt.Sprintf("plancritic-%x-*%s", sum[:4], ext)
-	file, err := os.CreateTemp("", pattern)
-	if err != nil {
-		return "", err
+	return base
+}
+
+// uniqueBasename appends -2, -3, ... before the extension until base is
+// not yet in used, then records it. Collisions are resolved in input
+// order so repeated calls with the same documents yield the same names.
+// Names are compared case-insensitively so SPEC.md and spec.md cannot
+// overwrite each other on macOS or Windows.
+func uniqueBasename(base string, used map[string]bool) string {
+	candidate := base
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for i := 2; used[strings.ToLower(candidate)]; i++ {
+		candidate = fmt.Sprintf("%s-%d%s", stem, i, ext)
 	}
-	defer file.Close()
-	if _, err := file.WriteString(text); err != nil {
-		_ = os.Remove(file.Name())
-		return "", err
-	}
-	return file.Name(), nil
+	used[strings.ToLower(candidate)] = true
+	return candidate
 }
 
 func cloneReview(input *Review) *Review {

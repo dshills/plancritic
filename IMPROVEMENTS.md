@@ -29,6 +29,10 @@ every heading *and every dash bullet* of the plan (255 "steps" for a 597-line pl
 
 ### 1. Drop or compress the "Inferred Plan Steps" section  — Tokens, Accuracy
 
+**Status: done** (commit `5a9a341`). Dash bullets are no longer steps; the prompt
+emits a compact index with titles truncated to 60 runes. Measured: index 18,973 →
+5,074 chars, total prompt ~65.7k → ~52.5k chars on the baseline.
+
 **Evidence:** `plan.InferStepIDs` treats every `- ` bullet as a step; `prompt.BuildSegments`
 then re-emits each one as `- P-123 (L45): <full line text>`. On the baseline plan this is
 ~4.7k tokens per run, every run, in the non-cacheable segment, and it is pure duplication of
@@ -43,6 +47,13 @@ model is no longer invited to cite the duplicate copy instead of the plan lines.
 **Effort:** Small (`internal/prompt/prompt.go`, `internal/plan/plan.go`, tests).
 
 ### 2. Local result cache keyed by input hash  — Speed, Tokens
+
+**Status: done.** `internal/resultcache` stores reviews keyed on the exact prompt
+text plus provider, effective model, temperature, seed, and max-tokens; output-only
+flags are applied on hit. `--no-result-cache` bypasses it, `--no-cache` disables it
+together with prompt caching, `PLANCRITIC_CACHE_DIR` relocates it, and hits carry
+`meta.cached: true`. The SDK facade now materializes in-memory documents under
+deterministic names so its callers get hits too.
 
 **Evidence:** Agents routinely re-run with an unchanged plan (the shipped SKILL.md even warns
 against it, which means it happens). Every such run pays full LLM latency and tokens for an

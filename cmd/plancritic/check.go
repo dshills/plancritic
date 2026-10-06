@@ -39,6 +39,7 @@ type checkFlags struct {
 	failOn            string
 	redactEnabled     bool
 	noCache           bool
+	noResultCache     bool
 	cacheTTL          string
 	verbose           bool
 	debug             bool
@@ -78,7 +79,8 @@ func newCheckCmd() *cobra.Command {
 	flags.StringVar(&f.patchOut, "patch-out", "", "Write suggested patches as unified diff")
 	flags.StringVar(&f.failOn, "fail-on", envStr("PLANCRITIC_FAIL_ON", ""), "Exit non-zero if verdict meets this level")
 	flags.BoolVar(&f.redactEnabled, "redact", envBool("PLANCRITIC_REDACT", true), "Redact secrets before sending to model")
-	flags.BoolVar(&f.noCache, "no-cache", envBool("PLANCRITIC_NO_CACHE", false), "Disable prompt caching (Anthropic cache_control markers / Gemini context cache)")
+	flags.BoolVar(&f.noCache, "no-cache", envBool("PLANCRITIC_NO_CACHE", false), "Disable all caching: provider prompt caches and the local result cache")
+	flags.BoolVar(&f.noResultCache, "no-result-cache", envBool("PLANCRITIC_NO_RESULT_CACHE", false), "Always call the model, even when an identical run is in the local result cache (set PLANCRITIC_CACHE_DIR to relocate the cache)")
 	flags.StringVar(&f.cacheTTL, "cache-ttl", envStr("PLANCRITIC_CACHE_TTL", "1h"), "TTL for provider-side context caches (Gemini only)")
 	flags.BoolVar(&f.verbose, "verbose", false, "Print processing steps to stderr")
 	flags.BoolVar(&f.debug, "debug", false, "Save prompt to debug file")
@@ -160,6 +162,7 @@ func runReview(parentCtx context.Context, planPath string, f *checkFlags) (revie
 		SeverityThreshold: f.severityThreshold,
 		RedactEnabled:     f.redactEnabled,
 		NoCache:           f.noCache,
+		NoResultCache:     f.noResultCache,
 		CacheTTL:          f.cacheTTL,
 		Verbose:           f.verbose,
 		Debug:             f.debug,

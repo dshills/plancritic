@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/dshills/plancritic/internal/llm"
+	"github.com/dshills/plancritic/internal/resultcache"
 	"github.com/dshills/plancritic/internal/review"
 )
 
@@ -222,8 +223,13 @@ func validMockResponse() string {
 	return string(data)
 }
 
+// writeTempPlan writes a plan file into a fresh temp dir and points the
+// result cache at a fresh temp dir too. Every runCheck test goes through
+// this helper, so no test can be served a cached review from another
+// test (or from the developer's real cache).
 func writeTempPlan(t *testing.T, content string) string {
 	t.Helper()
+	t.Setenv(resultcache.EnvDir, t.TempDir())
 	dir := t.TempDir()
 	path := filepath.Join(dir, "plan.md")
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
@@ -678,4 +684,184 @@ func (m *callCountMockProvider) Generate(_ context.Context, _ string, _ llm.Sett
 	resp := m.responses[m.callIdx]
 	m.callIdx++
 	return resp, llm.Usage{}, nil
+}
+
+// --- result cache ---
+
+func cacheTestFlags(t *testing.T, mock *llm.MockProvider) *checkFlags {
+	t.Helper()
+	return &checkFlags{
+		format:            "json",
+		out:               filepath.Join(t.TempDir(), "out.json"),
+		profileName:       "general",
+		redactEnabled:     true,
+		severityThreshold: "info",
+		provider:          mock,
+	}
+}
+
+func readReview(t *testing.T, path string) review.Review {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rev review.Review
+	if err := json.Unmarshal(data, &rev); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	return rev
+}
+
+func TestRunCheckResultCacheHitSkipsProvider(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Do the thing\n")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+
+	f1 := cacheTestFlags(t, mock)
+	if err := runCheck(context.Background(), planPath, f1); err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 1 {
+		t.Fatalf("first run should call the provider once, got %d", mock.Calls)
+	}
+	first := readReview(t, f1.out)
+	if first.Meta.Cached {
+		t.Error("first run must not be marked cached")
+	}
+
+	f2 := cacheTestFlags(t, mock)
+	if err := runCheck(context.Background(), planPath, f2); err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 1 {
+		t.Fatalf("second identical run should be served from cache, provider calls = %d", mock.Calls)
+	}
+	second := readReview(t, f2.out)
+	if !second.Meta.Cached {
+		t.Error("second run should be marked cached")
+	}
+	if second.Summary != first.Summary {
+		t.Errorf("cached summary differs: %+v vs %+v", second.Summary, first.Summary)
+	}
+	if len(second.Issues) != len(first.Issues) || second.Issues[0].Evidence[0].Quote != first.Issues[0].Evidence[0].Quote {
+		t.Error("cached issues should match the original run, including reconstructed quotes")
+	}
+	if second.Input.PlanHash != first.Input.PlanHash || second.Tool != "plancritic" {
+		t.Error("cached run should carry freshly computed metadata")
+	}
+}
+
+func TestRunCheckResultCacheMissWhenPlanChanges(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+
+	if err := runCheck(context.Background(), planPath, cacheTestFlags(t, mock)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, []byte("# Plan\n1. Step A revised\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCheck(context.Background(), planPath, cacheTestFlags(t, mock)); err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 2 {
+		t.Errorf("edited plan should miss the cache, provider calls = %d", mock.Calls)
+	}
+}
+
+func TestRunCheckResultCacheMissWhenSettingsChange(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+
+	if err := runCheck(context.Background(), planPath, cacheTestFlags(t, mock)); err != nil {
+		t.Fatal(err)
+	}
+
+	strict := cacheTestFlags(t, mock)
+	strict.strict = true
+	if err := runCheck(context.Background(), planPath, strict); err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 2 {
+		t.Errorf("--strict changes the prompt and must miss, provider calls = %d", mock.Calls)
+	}
+
+	temp := cacheTestFlags(t, mock)
+	temp.temperature = 0.9
+	if err := runCheck(context.Background(), planPath, temp); err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 3 {
+		t.Errorf("--temperature changes sampling and must miss, provider calls = %d", mock.Calls)
+	}
+}
+
+func TestRunCheckResultCacheHitHonorsOutputFlags(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+
+	if err := runCheck(context.Background(), planPath, cacheTestFlags(t, mock)); err != nil {
+		t.Fatal(err)
+	}
+
+	// validMockResponse has one CRITICAL issue and one WARN question.
+	f := cacheTestFlags(t, mock)
+	f.severityThreshold = "critical"
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	if mock.Calls != 1 {
+		t.Fatalf("severity threshold is output-only and should still hit, provider calls = %d", mock.Calls)
+	}
+	rev := readReview(t, f.out)
+	if !rev.Meta.Cached {
+		t.Error("expected cached result")
+	}
+	if len(rev.Questions) != 0 {
+		t.Errorf("WARN question should be filtered out on the cached path, got %d questions", len(rev.Questions))
+	}
+	if len(rev.Issues) != 1 {
+		t.Errorf("CRITICAL issue should survive, got %d issues", len(rev.Issues))
+	}
+}
+
+func TestRunCheckResultCacheDisabledByFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		apply func(*checkFlags)
+	}{
+		{"no-result-cache", func(f *checkFlags) { f.noResultCache = true }},
+		{"no-cache", func(f *checkFlags) { f.noCache = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			planPath := writeTempPlan(t, "# Plan\n1. Step "+tc.name+"\n")
+			mock := &llm.MockProvider{Response: validMockResponse()}
+			for i := 0; i < 2; i++ {
+				f := cacheTestFlags(t, mock)
+				tc.apply(f)
+				if err := runCheck(context.Background(), planPath, f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mock.Calls != 2 {
+				t.Errorf("cache disabled: expected 2 provider calls, got %d", mock.Calls)
+			}
+		})
+	}
+}
+
+func TestRunCheckProviderErrorIsNotCached(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A\n")
+	mock := &llm.MockProvider{Response: "not json at all"}
+
+	if err := runCheck(context.Background(), planPath, cacheTestFlags(t, mock)); err == nil {
+		t.Fatal("expected a schema error for a non-JSON response")
+	}
+	mock.Response = validMockResponse()
+	if err := runCheck(context.Background(), planPath, cacheTestFlags(t, mock)); err != nil {
+		t.Fatalf("second run should succeed: %v", err)
+	}
+	if mock.Calls != 2 {
+		t.Errorf("a failed run must not populate the cache, provider calls = %d", mock.Calls)
+	}
 }

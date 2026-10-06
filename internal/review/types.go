@@ -40,16 +40,16 @@ type Summary struct {
 
 // Issue represents a detected problem in the plan.
 type Issue struct {
-	ID             string   `json:"id"`
-	Severity       Severity `json:"severity"`
-	Category       Category `json:"category"`
-	Title          string   `json:"title"`
-	Description    string   `json:"description"`
+	ID             string     `json:"id"`
+	Severity       Severity   `json:"severity"`
+	Category       Category   `json:"category"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
 	Evidence       []Evidence `json:"evidence"`
-	Impact         string   `json:"impact"`
-	Recommendation string   `json:"recommendation"`
-	Blocking       bool     `json:"blocking"`
-	Tags           []string `json:"tags,omitempty"`
+	Impact         string     `json:"impact"`
+	Recommendation string     `json:"recommendation"`
+	Blocking       bool       `json:"blocking"`
+	Tags           []string   `json:"tags,omitempty"`
 }
 
 // Question represents an ambiguity that must be resolved.
@@ -73,9 +73,9 @@ type Patch struct {
 
 // Checklist records the result of a profile checklist evaluation.
 type Checklist struct {
-	ID     string       `json:"id"`
-	Title  string       `json:"title"`
-	Checks []CheckItem  `json:"checks"`
+	ID     string      `json:"id"`
+	Title  string      `json:"title"`
+	Checks []CheckItem `json:"checks"`
 }
 
 // CheckItem is a single check within a checklist.
@@ -87,14 +87,17 @@ type CheckItem struct {
 // Evidence references a specific location in the plan or context.
 type Evidence struct {
 	Source    string `json:"source"`
-	Path     string `json:"path"`
+	Path      string `json:"path"`
 	LineStart int    `json:"line_start"`
 	LineEnd   int    `json:"line_end"`
-	Quote    string `json:"quote"`
+	Quote     string `json:"quote"`
 }
 
 // Meta records the model and settings used for the review.
 type Meta struct {
 	Model       string  `json:"model"`
 	Temperature float64 `json:"temperature"`
+	// Cached is true when the review was served from the local result
+	// cache rather than a fresh provider call.
+	Cached bool `json:"cached,omitempty"`
 }

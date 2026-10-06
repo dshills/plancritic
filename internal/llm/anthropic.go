@@ -36,6 +36,9 @@ func NewAnthropic() (*AnthropicProvider, error) {
 
 func (a *AnthropicProvider) Name() string { return "anthropic" }
 
+// DefaultModel implements ModelDefaulter.
+func (a *AnthropicProvider) DefaultModel() string { return anthropicDefaultModel }
+
 func (a *AnthropicProvider) Generate(ctx context.Context, prompt string, s Settings) (string, Usage, error) {
 	return a.GenerateSegments(ctx, []Segment{{Text: prompt}}, s)
 }

@@ -49,6 +49,9 @@ func NewGemini() (*GeminiProvider, error) {
 
 func (g *GeminiProvider) Name() string { return "gemini" }
 
+// DefaultModel implements ModelDefaulter.
+func (g *GeminiProvider) DefaultModel() string { return geminiDefaultModel }
+
 func (g *GeminiProvider) Generate(ctx context.Context, prompt string, s Settings) (string, Usage, error) {
 	return g.GenerateSegments(ctx, []Segment{{Text: prompt}}, s)
 }

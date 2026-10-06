@@ -34,6 +34,9 @@ func NewOpenAI() (*OpenAIProvider, error) {
 
 func (o *OpenAIProvider) Name() string { return "openai" }
 
+// DefaultModel implements ModelDefaulter.
+func (o *OpenAIProvider) DefaultModel() string { return openaiDefaultModel }
+
 func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings) (string, Usage, error) {
 	model := s.Model
 	if model == "" {
