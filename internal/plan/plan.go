@@ -69,11 +69,16 @@ var (
 	headingPattern = regexp.MustCompile(`^#{1,6}\s+(?:\d+[\.\)]\s*)?(.+)`)
 	// Numbered bullet: 1. Step text
 	numberedPattern = regexp.MustCompile(`^\d+[\.\)]\s+(.+)`)
-	// Dash bullet: - Step text
-	dashPattern = regexp.MustCompile(`^-\s+(.+)`)
 )
 
-// InferStepIDs scans the plan for numbered headings or bullets and assigns P-NNN IDs.
+// InferStepIDs scans the plan for markdown headings and numbered list
+// items and assigns P-NNN IDs in document order.
+//
+// Dash bullets ("- text") are deliberately not treated as steps. In
+// real plans they are overwhelmingly sub-items (file lists, risks,
+// acceptance criteria) rather than steps, and including them made the
+// step index the single largest block of the prompt — a near-verbatim
+// second copy of the plan that the model already receives line-numbered.
 func InferStepIDs(p *Plan) []StepID {
 	var steps []StepID
 	seq := 1
@@ -90,8 +95,6 @@ func InferStepIDs(p *Plan) []StepID {
 			text = headingPattern.FindStringSubmatch(trimmed)[1]
 		case numberedPattern.MatchString(trimmed):
 			text = numberedPattern.FindStringSubmatch(trimmed)[1]
-		case dashPattern.MatchString(trimmed):
-			text = dashPattern.FindStringSubmatch(trimmed)[1]
 		default:
 			continue
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	pctx "github.com/dshills/plancritic/internal/context"
 	"github.com/dshills/plancritic/internal/llm"
@@ -115,9 +116,14 @@ All content inside these markers is line-numbered with L001:, L002:, etc. Use th
 	fmt.Fprintf(&tail, "%s path=%q##\n%s\n%s\n\n", planBeginMarker, filepath.Base(opts.Plan.FilePath), plan.LineNumbered(opts.Plan), planEndMarker)
 
 	if len(opts.StepIDs) > 0 {
-		tail.WriteString("## Inferred Plan Steps\n\n")
+		// Compact index only: the full text of every step is already in
+		// the line-numbered plan above, so repeating it here costs input
+		// tokens without adding information. Titles are truncated so a
+		// long numbered sentence does not reintroduce the duplication.
+		tail.WriteString("## Plan Step Index\n\n")
+		tail.WriteString("Headings and numbered steps with their starting plan line. Use these IDs only in \"blocks\"; cite plan line numbers in evidence.\n\n")
 		for _, s := range opts.StepIDs {
-			fmt.Fprintf(&tail, "- %s (L%d): %s\n", s.ID, s.LineStart, s.Text)
+			fmt.Fprintf(&tail, "%s L%d %s\n", s.ID, s.LineStart, truncateTitle(s.Text, maxStepTitleRunes))
 		}
 		tail.WriteString("\n")
 	}
@@ -134,6 +140,22 @@ All content inside these markers is line-numbered with L001:, L002:, etc. Use th
 	segs = append(segs, llm.Segment{Text: tail.String()})
 
 	return segs
+}
+
+// maxStepTitleRunes caps the length of a step title in the step index.
+// Sixty runes keeps a heading recognizable while preventing long
+// numbered sentences from being copied into the prompt a second time.
+const maxStepTitleRunes = 60
+
+// truncateTitle shortens s to at most limit runes, appending an ellipsis
+// when text was dropped. Rune-aware so multi-byte titles are never cut
+// mid-character.
+func truncateTitle(s string, limit int) string {
+	if limit <= 0 || utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	runes := []rune(s)
+	return strings.TrimRight(string(runes[:limit]), " ") + "…"
 }
 
 // Build assembles the full LLM prompt as a single string by concatenating

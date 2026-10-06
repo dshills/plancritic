@@ -61,8 +61,47 @@ func TestBuildWithStepIDs(t *testing.T) {
 	p := &plan.Plan{FilePath: "plan.md", Lines: []string{"step"}}
 	steps := []plan.StepID{{ID: "P-001", LineStart: 1, Text: "First step"}}
 	text := Build(BuildOpts{Plan: p, StepIDs: steps})
-	if !strings.Contains(text, "P-001") {
-		t.Error("step IDs missing from prompt")
+	if !strings.Contains(text, "P-001 L1 First step") {
+		t.Errorf("compact step index entry missing from prompt:\n%s", text)
+	}
+}
+
+func TestBuildStepIndexTruncatesLongTitles(t *testing.T) {
+	long := strings.Repeat("word ", 30) // 150 chars
+	p := &plan.Plan{FilePath: "plan.md", Lines: []string{long}}
+	steps := []plan.StepID{{ID: "P-001", LineStart: 1, Text: long}}
+	text := Build(BuildOpts{Plan: p, StepIDs: steps})
+
+	idx := strings.Index(text, "## Plan Step Index")
+	if idx == -1 {
+		t.Fatal("step index section missing")
+	}
+	section := text[idx:]
+	if strings.Contains(section, long) {
+		t.Error("step index repeated the full step text; expected truncation")
+	}
+	if !strings.Contains(section, "…") {
+		t.Error("truncated title should end with an ellipsis")
+	}
+}
+
+func TestTruncateTitle(t *testing.T) {
+	tests := []struct {
+		in    string
+		limit int
+		want  string
+	}{
+		{"short", 10, "short"},
+		{"exactly10!", 10, "exactly10!"},
+		{"this is longer than ten", 10, "this is lo…"},
+		{"trailing space ", 9, "trailing…"},
+		{"héllo wörld ünïcode", 5, "héllo…"},
+		{"anything", 0, "anything"},
+	}
+	for _, tt := range tests {
+		if got := truncateTitle(tt.in, tt.limit); got != tt.want {
+			t.Errorf("truncateTitle(%q, %d) = %q, want %q", tt.in, tt.limit, got, tt.want)
+		}
 	}
 }
 

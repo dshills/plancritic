@@ -62,10 +62,10 @@ func TestInferStepIDs(t *testing.T) {
 	}{
 		{"numbered headings", "# 1. Setup\n# 2. Build\n# 3. Deploy", 3},
 		{"numbered bullets", "1. First step\n2. Second step", 2},
-		{"dash bullets", "- Alpha\n- Beta\n- Gamma", 3},
+		{"dash bullets are not steps", "- Alpha\n- Beta\n- Gamma", 0},
 		{"markdown headings", "## Overview\n## Implementation", 2},
 		{"empty", "", 0},
-		{"mixed", "# Intro\n1. Step one\n- Detail", 3},
+		{"mixed", "# Intro\n1. Step one\n- Detail", 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
