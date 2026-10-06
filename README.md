@@ -174,7 +174,7 @@ With `--strict`, the model treats everything not present in the plan or context 
 
 - Issues must not claim "the repo uses X" unless it appears in provided context.
 - Uncertain inferences are capped at WARN severity and tagged with `"assumption"`.
-- A post-check scans descriptions for phrases suggesting fabricated repo knowledge and downgrades those issues to `UNVERIFIED`.
+- A post-check scans descriptions for phrases suggesting fabricated repo knowledge ("the existing code", "the codebase uses", ...) and downgrades those issues from CRITICAL to WARN, tagging them `UNVERIFIED` plus `UNVERIFIED:<phrase>` so the reason is visible. A phrase that appears in the finding's own cited evidence is not flagged: quoting the plan's own claim is not fabrication.
 
 Use strict mode when reviewing plans for unfamiliar codebases or when you want conservative, citation-only output.
 

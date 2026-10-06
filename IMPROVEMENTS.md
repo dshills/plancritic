@@ -371,6 +371,13 @@ do not repeat them", trimming output tokens.
 
 ### 14. Tighten the strict-mode grounding check to avoid false downgrades  — Accuracy
 
+**Status: done.** A fabrication phrase is a violation only when it does not appear in
+the finding's own cited evidence (quotes are reconstructed before the check), matched
+case-insensitively on word boundaries with whitespace and apostrophes normalized. This
+is deliberately narrower than "anywhere in the plan": phrases like "the project's" are
+common plan wording, and a plan-wide match would let unrelated text launder a
+fabricated claim. Downgraded issues carry `UNVERIFIED` plus `UNVERIFIED:<phrase>`.
+
 **Evidence:** `review.CheckGrounding` downgrades any issue whose text contains phrases such
 as "the project's" or "the existing code", regardless of whether that phrase also appears in
 the plan or context. A plan that itself says "the existing code uses Cobra" causes a correct

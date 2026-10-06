@@ -92,3 +92,71 @@ func hasTag(tags []string, target string) bool {
 	}
 	return false
 }
+
+func TestCheckGroundingPhraseInCitedEvidenceIsNotAViolation(t *testing.T) {
+	r := &Review{Issues: []Issue{
+		{ID: "I-1", Severity: SeverityCritical, Description: "The plan says the existing code uses Cobra but then replaces it.",
+			Evidence: []Evidence{{Source: "plan", LineStart: 3, LineEnd: 3, Quote: "Note: The existing\n   code uses Cobra for the CLI."}}},
+		{ID: "I-2", Severity: SeverityCritical, Description: "The existing code uses Cobra.",
+			Evidence: []Evidence{{Source: "plan", LineStart: 9, LineEnd: 9, Quote: "Add a CLI."}}},
+		{ID: "I-3", Description: "The project’s layout is unclear.",
+			Evidence: []Evidence{{Source: "context", Path: "SPEC.md", LineStart: 1, LineEnd: 1, Quote: "Describe the project's layout."}}},
+	}}
+	v := CheckGrounding(r)
+	ids := map[string]bool{}
+	for _, x := range v {
+		ids[x.IssueID] = true
+	}
+	if ids["I-1"] {
+		t.Error("a phrase the finding quotes from its own evidence (across a line break) is grounded")
+	}
+	if !ids["I-2"] {
+		t.Error("the same phrase without supporting evidence is still a violation")
+	}
+	if ids["I-3"] {
+		t.Error("curly and straight apostrophes should match")
+	}
+
+	ApplyGroundingDowngrades(r, v)
+	if r.Issues[0].Severity != SeverityCritical || len(r.Issues[0].Tags) != 0 {
+		t.Errorf("a grounded CRITICAL must not be downgraded or tagged: %+v", r.Issues[0])
+	}
+	want := []string{"UNVERIFIED", "UNVERIFIED:the existing code"}
+	if r.Issues[1].Severity != SeverityWarn || len(r.Issues[1].Tags) != 2 || r.Issues[1].Tags[0] != want[0] || r.Issues[1].Tags[1] != want[1] {
+		t.Errorf("violation should downgrade and name the phrase: %+v", r.Issues[1])
+	}
+}
+
+func TestCheckGroundingWordBoundaries(t *testing.T) {
+	r := &Review{Issues: []Issue{
+		{ID: "I-1", Description: "Switch the existing codec to Opus."},
+		{ID: "I-2", Description: "List the projects affected."},
+	}}
+	if v := CheckGrounding(r); len(v) != 0 {
+		t.Errorf("'existing codec' and 'the projects' are not fabrication phrases: %+v", v)
+	}
+}
+
+func TestApplyGroundingDowngradesTagsEachPhraseOnce(t *testing.T) {
+	r := &Review{Issues: []Issue{{ID: "I-1", Severity: SeverityCritical,
+		Description: "The codebase uses X.", Impact: "The codebase uses X widely.", Recommendation: "Looking at the code, change it."}}}
+	ApplyGroundingDowngrades(r, CheckGrounding(r))
+	got := r.Issues[0].Tags
+	want := []string{"UNVERIFIED", "UNVERIFIED:the codebase uses", "UNVERIFIED:looking at the code"}
+	if len(got) != len(want) {
+		t.Fatalf("tags = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tags = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestCheckGroundingDoesNotJoinCitations(t *testing.T) {
+	r := &Review{Issues: []Issue{{ID: "I-1", Description: "The existing code is fragile.",
+		Evidence: []Evidence{{Source: "plan", Quote: "Refactor the existing"}, {Source: "plan", Quote: "code paths later."}}}}}
+	if v := CheckGrounding(r); len(v) != 1 {
+		t.Errorf("a phrase split across two citations is not grounded: %+v", v)
+	}
+}
