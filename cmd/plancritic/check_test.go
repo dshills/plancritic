@@ -1301,7 +1301,8 @@ func TestRunCheckBaselineDelta(t *testing.T) {
 	  {"id":"ISSUE-0001","severity":"WARN","category":"TEST_GAP","title":"Still no tests","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":4,"line_end":4}],"impact":"i","recommendation":"r","blocking":false},
 	  {"id":"ISSUE-0002","severity":"INFO","category":"AMBIGUITY","title":"Vague intro","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}],"impact":"i","recommendation":"r","blocking":false}
 	]}`
-	if err := os.WriteFile(planPath, []byte("# Plan\nIntro: make it robust\n1. Uses libfoo (approved)\n2. Ship it"), 0o644); err != nil {
+	// (No profile trigger words here, or the local lint would add findings.)
+	if err := os.WriteFile(planPath, []byte("# Plan\nIntro: describe the goal\n1. Uses libfoo (approved)\n2. Ship it"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f2 := cacheTestFlags(t, &llm.MockProvider{Response: run2})
@@ -1663,5 +1664,100 @@ func TestRunCheckSpecMissingFailsFast(t *testing.T) {
 	assertExitCode(t, err, 3)
 	if mock.Calls != 0 {
 		t.Error("a missing spec must fail before any provider call")
+	}
+}
+
+// --- local lint ---
+
+func TestRunLintCommandNeedsNoProvider(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n## Phase 1: Setup\nMake it fast. TODO decide.\n## Phase 2: Build\nAcceptance criteria: builds.\nSee Phase 9.")
+	f := &checkFlags{format: "json", out: filepath.Join(t.TempDir(), "lint.json"), profileName: "general", severityThreshold: "info", redactEnabled: true}
+	if err := runLint(planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	rev := readReview(t, f.out)
+	if rev.Meta.Model != "local/lint" || rev.Tool != "plancritic" {
+		t.Errorf("lint review should be labelled local/lint: %+v", rev.Meta)
+	}
+	titles := map[string]bool{}
+	for _, iss := range rev.Issues {
+		titles[iss.Title] = true
+		if iss.Severity != review.SeverityInfo || iss.Blocking || iss.Fingerprint == "" || !strings.HasPrefix(iss.ID, "ISSUE-LINT-") {
+			t.Errorf("local finding should be INFO, non-blocking, fingerprinted, LINT-numbered: %+v", iss)
+		}
+	}
+	for _, want := range []string{`Vague phrase "fast"`, "Unresolved placeholder", "Reference to undefined Phase 9", "Phase without acceptance criteria"} {
+		if !titles[want] {
+			t.Errorf("expected finding %q, got %v", want, titles)
+		}
+	}
+	if rev.Summary.Verdict != review.VerdictExecutable || rev.Summary.InfoCount != len(rev.Issues) {
+		t.Errorf("INFO-only findings keep the plan executable: %+v", rev.Summary)
+	}
+
+	// --fail-on and the output formats work as for check.
+	g := &checkFlags{format: "compact", out: filepath.Join(t.TempDir(), "lint.txt"), profileName: "general", severityThreshold: "info", failOn: "executable"}
+	assertExitCode(t, runLint(planPath, g), 2)
+	data, _ := os.ReadFile(g.out)
+	if !strings.HasPrefix(string(data), "VERDICT EXECUTABLE_AS_IS ") || !strings.Contains(string(data), "[local,trigger-phrase]") {
+		t.Errorf("compact lint output wrong:\n%s", data)
+	}
+	h := &checkFlags{format: "yaml", profileName: "general"}
+	assertExitCode(t, runLint(planPath, h), 3)
+}
+
+func TestRunCheckMergesLocalFindingsAndPreFlags(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Make it robust\n2. TBD")
+	mock := &callCountMockProvider{responses: []string{validMockResponse()}}
+	f := cacheTestFlags(t, nil)
+	f.provider = mock
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	prompt := mock.prompts[0]
+	if !strings.Contains(prompt, "## Already Flagged Locally") || !strings.Contains(prompt, `AMBIGUITY: Vague phrase "robust" (L2)`) {
+		t.Errorf("prompt should list the local findings:\n%s", prompt)
+	}
+	rev := readReview(t, f.out)
+	var local, model int
+	for _, iss := range rev.Issues {
+		if strings.HasPrefix(iss.ID, "ISSUE-LINT-") {
+			local++
+		} else {
+			model++
+		}
+	}
+	if local != 2 || model != 1 {
+		t.Errorf("expected 2 local + 1 model issue, got local=%d model=%d", local, model)
+	}
+	if rev.Issues[0].ID != "ISSUE-0001" {
+		t.Errorf("the model's CRITICAL should sort before the local INFO findings, got %s first", rev.Issues[0].ID)
+	}
+
+	off := &callCountMockProvider{responses: []string{validMockResponse()}}
+	g := cacheTestFlags(t, nil)
+	g.provider = off
+	g.noLint = true
+	if err := runCheck(context.Background(), planPath, g); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(off.prompts[0], "Already Flagged Locally") || len(readReview(t, g.out).Issues) != 1 {
+		t.Error("--no-lint should neither pre-flag nor merge local findings")
+	}
+}
+
+func TestRunCheckModelFindingSupersedesLocalCandidate(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Make it robust")
+	// The model confirms the vague phrase on L2 at WARN with its own title.
+	resp := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"AMBIGUITY","title":"Robustness is undefined","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}],"impact":"i","recommendation":"r","blocking":false}
+	]}`
+	f := cacheTestFlags(t, &llm.MockProvider{Response: resp})
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	rev := readReview(t, f.out)
+	if len(rev.Issues) != 1 || rev.Issues[0].ID != "ISSUE-0001" || rev.Issues[0].Severity != review.SeverityWarn {
+		t.Errorf("the model's confirmed WARN should replace the local INFO candidate, got %+v", rev.Issues)
 	}
 }

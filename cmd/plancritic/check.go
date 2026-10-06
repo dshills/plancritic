@@ -44,6 +44,7 @@ type checkFlags struct {
 	patchOut          string
 	checklists        bool
 	baseline          string
+	noLint            bool
 	failOn            string
 	redactEnabled     bool
 	noCache           bool
@@ -96,6 +97,7 @@ func newCheckCmd() *cobra.Command {
 	flags.StringVar(&f.severityThreshold, "severity-threshold", envStr("PLANCRITIC_SEVERITY_THRESHOLD", "info"), "Minimum severity: info, warn, or critical")
 	flags.StringVar(&f.patchOut, "patch-out", "", "Write suggested patches as unified diff (also asks the model to produce them)")
 	flags.StringVar(&f.baseline, "baseline", envStr("PLANCRITIC_BASELINE", ""), "Earlier run's JSON output to compare against; adds resolved/new/persisting to the result")
+	flags.BoolVar(&f.noLint, "no-lint", envBool("PLANCRITIC_NO_LINT", false), "Skip the local zero-token checks that run before the model (see 'plancritic lint')")
 	flags.BoolVar(&f.checklists, "checklists", envBool("PLANCRITIC_CHECKLISTS", false), "Ask the model to grade every profile checklist item (PASS/FAIL/N/A) and include the result")
 	flags.StringVar(&f.failOn, "fail-on", envStr("PLANCRITIC_FAIL_ON", ""), "Exit non-zero if verdict meets this level")
 	flags.BoolVar(&f.redactEnabled, "redact", envBool("PLANCRITIC_REDACT", true), "Redact secrets before sending to model")
@@ -120,60 +122,7 @@ func runCheck(ctx context.Context, planPath string, f *checkFlags) error {
 		return err
 	}
 
-	verbose := verboseLogger(f.verbose)
-
-	// 12. Output
-	if f.noQuotes {
-		review.StripQuotes(&rev)
-	}
-	var output string
-	switch f.format {
-	case "json":
-		data, err := json.MarshalIndent(rev, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal output: %w", err)
-		}
-		output = string(data) + "\n"
-	case "md":
-		output = render.Markdown(&rev)
-	case "compact":
-		output = render.Compact(&rev)
-	}
-
-	if f.out != "" {
-		verbose("Writing output to %s", f.out)
-		if err := os.WriteFile(f.out, []byte(output), 0644); err != nil {
-			return fmt.Errorf("failed to write output: %w", err)
-		}
-		if f.quiet {
-			fmt.Println(render.CompactHeader(&rev))
-		}
-	} else if f.quiet {
-		fmt.Println(render.CompactHeader(&rev))
-	} else {
-		fmt.Print(output)
-	}
-
-	// 13. Patch output
-	if f.patchOut != "" {
-		verbose("Writing patches to %s", f.patchOut)
-		if err := patch.WritePatchFile(rev.Patches, f.patchOut); err != nil {
-			return fmt.Errorf("failed to write patches: %w", err)
-		}
-	}
-
-	// 14. Exit code based on --fail-on
-	if f.failOn != "" {
-		meets, err := verdictMeetsThreshold(rev.Summary.Verdict, f.failOn)
-		if err != nil {
-			return exitError(3, "%v", err)
-		}
-		if meets {
-			return exitError(2, "verdict %s meets fail threshold %s", rev.Summary.Verdict, f.failOn)
-		}
-	}
-
-	return nil
+	return emitReview(&rev, f, verboseLogger(f.verbose))
 }
 
 func runReview(parentCtx context.Context, planPath string, f *checkFlags) (review.Review, error) {
@@ -201,6 +150,7 @@ func runReview(parentCtx context.Context, planPath string, f *checkFlags) (revie
 		Patches:           f.patchOut != "",
 		Checklists:        f.checklists,
 		BaselinePath:      f.baseline,
+		NoLint:            f.noLint,
 		CacheTTL:          f.cacheTTL,
 		Verbose:           f.verbose,
 		Debug:             f.debug,
@@ -326,4 +276,71 @@ func resolvePlanPath(args []string, planFlag string) (string, error) {
 		return planFlag, nil
 	}
 	return "", exitError(3, "plan file required: pass it as the argument or with --plan")
+}
+
+// emitReview writes the review in the requested format, the patch file,
+// and applies --fail-on. It is shared by check and lint.
+func emitReview(rev *review.Review, f *checkFlags, verbose func(string, ...any)) error {
+	// 12. Output
+	if f.noQuotes {
+		review.StripQuotes(rev)
+	}
+	var output string
+	switch f.format {
+	case "json":
+		data, err := json.MarshalIndent(rev, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal output: %w", err)
+		}
+		output = string(data) + "\n"
+	case "md":
+		output = render.Markdown(rev)
+	case "compact":
+		output = render.Compact(rev)
+	}
+
+	if f.out != "" {
+		verbose("Writing output to %s", f.out)
+		if err := os.WriteFile(f.out, []byte(output), 0644); err != nil {
+			return fmt.Errorf("failed to write output: %w", err)
+		}
+		if f.quiet {
+			fmt.Println(render.CompactHeader(rev))
+		}
+	} else if f.quiet {
+		fmt.Println(render.CompactHeader(rev))
+	} else {
+		fmt.Print(output)
+	}
+
+	// 13. Patch output
+	if f.patchOut != "" {
+		verbose("Writing patches to %s", f.patchOut)
+		if err := patch.WritePatchFile(rev.Patches, f.patchOut); err != nil {
+			return fmt.Errorf("failed to write patches: %w", err)
+		}
+	}
+
+	// 14. Exit code based on --fail-on
+	if f.failOn != "" {
+		meets, err := verdictMeetsThreshold(rev.Summary.Verdict, f.failOn)
+		if err != nil {
+			return exitError(3, "%v", err)
+		}
+		if meets {
+			return exitError(2, "verdict %s meets fail threshold %s", rev.Summary.Verdict, f.failOn)
+		}
+	}
+
+	return nil
+}
+
+// toExitError maps a reviewer error onto the CLI exit code it carries,
+// defaulting to 4 (provider/model error) for anything else.
+func toExitError(err error) error {
+	var re *reviewer.Error
+	if errors.As(err, &re) {
+		return exitError(re.Code, "%s", re.Msg)
+	}
+	return exitError(4, "%v", err)
 }

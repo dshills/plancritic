@@ -344,6 +344,18 @@ allows additional optional fields without breaking v1.
 
 ### 13. Zero-token local lint mode  — Speed, Tokens
 
+**Status: done.** `internal/lint` runs the profile's trigger phrases and contradiction
+pairs plus placeholder, empty-section, duplicate-heading, undefined-phase, and
+phase-without-criteria checks. `plancritic lint <plan>` emits them alone (same output
+shape and flags as `check`, no provider, `meta.model: local/lint`); `check` runs them
+first, merges them into the review, and lists them in the prompt so the model does not
+repeat them at INFO but to report any it can confirm at the severity it deserves, which
+then supersedes the local candidate (`--no-lint` disables). All local findings are INFO
+and non-blocking, even profile contradiction pairs, which are lexical co-occurrences
+until a model confirms. Headings and phase references inside fenced code are ignored,
+and duplicate headings are only reported among siblings under one parent; evidence
+caps keep both sides of a contradiction pair.
+
 **Evidence:** Several profile heuristics are literal string matches (`ambiguity_triggers`
 such as "fast", "secure", "etc.") that do not need an LLM, and structural checks (steps
 with no acceptance-criteria section, empty headings, duplicate step titles, forward

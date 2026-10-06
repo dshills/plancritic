@@ -60,6 +60,9 @@ plancritic check plan.md --format md
 # Compact report for a coding agent: one line per finding, no quotes
 plancritic check plan.md --format compact
 
+# Zero-token local checks only (vague phrases, TODOs, empty sections, undefined phases)
+plancritic lint plan.md --format compact
+
 # Full JSON to a file, one-line verdict on stdout
 plancritic check plan.md --out review.json --quiet
 
@@ -142,6 +145,7 @@ Common overrides:
 | `--severity-threshold` | `info` | Minimum severity to report; the model is told not to generate findings below it |
 | `--patch-out <path>` | — | Ask the model for plan edits and write them as a unified diff |
 | `--checklists` | false | Ask the model to grade every profile checklist item (PASS/FAIL/N/A) |
+| `--no-lint` | false | Skip the local zero-token checks that run before the model |
 | `--baseline <path>` | — | Earlier run's JSON output; adds a resolved/new/persisting delta to the result |
 | `--fail-on <level>` | — | Exit code 2 if verdict meets/exceeds this level |
 | `--redact` | true | Redact secrets before sending to model |
@@ -173,6 +177,21 @@ With `--strict`, the model treats everything not present in the plan or context 
 - A post-check scans descriptions for phrases suggesting fabricated repo knowledge and downgrades those issues to `UNVERIFIED`.
 
 Use strict mode when reviewing plans for unfamiliar codebases or when you want conservative, citation-only output.
+
+## Local Lint (zero tokens)
+
+`plancritic lint <plan>` runs only deterministic checks and never contacts a
+provider: the profile's vague-phrase triggers ("fast", "robust", "etc.") and
+contradiction pairs, unresolved placeholders (TODO, TBD, FIXME), empty sections,
+duplicate headings, references to phases that are never defined, and phases with no
+acceptance criteria. Every finding is INFO, non-blocking, and tagged `local`, with
+`meta.model` set to `local/lint`. The output has the same shape as `check` and takes
+the same output flags, so an agent can iterate on wording against `lint` for free and
+reserve `check` for the real gate.
+
+The same checks run at the start of every `check`: their findings are merged into the
+review and listed in the prompt under "Already Flagged Locally" so the model does not
+spend output tokens repeating them. `--no-lint` turns that off.
 
 ## Specification Coverage
 

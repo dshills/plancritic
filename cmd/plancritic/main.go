@@ -20,6 +20,7 @@ func main() {
 	}
 
 	root.AddCommand(newCheckCmd())
+	root.AddCommand(newLintCmd())
 
 	if err := root.Execute(); err != nil {
 		var ee *exitErr

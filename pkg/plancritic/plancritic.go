@@ -359,3 +359,27 @@ func cloneReview(input *Review) *Review {
 	clone.Checklists = append([]Checklist(nil), input.Checklists...)
 	return &clone
 }
+
+// LintOptions configures Lint.
+type LintOptions struct {
+	PlanPath          string
+	ProfileName       string
+	SeverityThreshold string
+	MaxIssues         int
+	RedactEnabled     bool
+}
+
+// Lint runs only the local, zero-token checks over a plan file (see
+// "plancritic lint"); no provider is contacted.
+func Lint(opts LintOptions) (*Review, error) {
+	rev, err := reviewer.Lint(opts.PlanPath, reviewer.LintOptions{
+		ProfileName:       opts.ProfileName,
+		SeverityThreshold: opts.SeverityThreshold,
+		MaxIssues:         opts.MaxIssues,
+		RedactEnabled:     opts.RedactEnabled,
+	}, "api")
+	if err != nil {
+		return nil, err
+	}
+	return &rev, nil
+}

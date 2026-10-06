@@ -16,6 +16,7 @@ import (
 
 	"github.com/dshills/plancritic/internal/cachestore"
 	pctx "github.com/dshills/plancritic/internal/context"
+	"github.com/dshills/plancritic/internal/lint"
 	"github.com/dshills/plancritic/internal/llm"
 	"github.com/dshills/plancritic/internal/plan"
 	"github.com/dshills/plancritic/internal/profile"
@@ -65,6 +66,9 @@ type Options struct {
 	// is loaded as a context file with the "spec" role and the result
 	// carries a Coverage matrix.
 	SpecPath string
+	// NoLint skips the local, zero-token checks (see package lint) that
+	// otherwise run before the model and are merged into the review.
+	NoLint bool
 	// Effort asks the model to reason less or more (see llm.Settings).
 	Effort string
 	// Fast selects the provider's cheaper, faster model tier when no
@@ -143,6 +147,14 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		return review.Review{}, Errorf(3, "failed to load profile: %v", err)
 	}
 
+	// 5. Local lint: deterministic findings recorded before the model
+	// runs, and listed in the prompt so the model does not repeat them.
+	var localIssues []review.Issue
+	if !f.NoLint {
+		localIssues = lint.Run(p, prof)
+		verbose("Local lint: %d finding(s)", len(localIssues))
+	}
+
 	// 6. Resolve LLM provider
 	verbose("Resolving LLM provider")
 	modelProvider := f.Provider
@@ -211,6 +223,7 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		// key): a review generated for "warn" never contained INFO
 		// findings and must not be served for an "info" request.
 		SeverityThreshold: f.SeverityThreshold,
+		PreFlagged:        lint.Summaries(localIssues),
 	}
 	promptSegments := prompt.BuildSegments(promptOpts)
 	if f.NoCache {
@@ -507,6 +520,13 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 	if misses := review.ReconstructQuotes(&rev, quoteSrc); misses > 0 {
 		verbose("Quote reconstruction: %d evidence entries could not be resolved to a source", misses)
 	}
+
+	// 10c. Merge the local findings. They were created with quotes and
+	// LINT ids, so they need none of the validation above, and they go
+	// in before caching so a cached review carries them too. A local
+	// candidate the model confirmed (same category, overlapping lines)
+	// is dropped in favor of the model's finding and its severity.
+	rev.Issues = append(rev.Issues, lint.Unsuperseded(localIssues, rev.Issues, p.Lines)...)
 
 	// 11. Post-process
 	if truncated {

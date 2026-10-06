@@ -47,7 +47,13 @@ type BuildOpts struct {
 	// the lowest severity the caller will keep, so it does not spend
 	// output tokens on findings that would be filtered out.
 	SeverityThreshold string
+	// PreFlagged lists findings already recorded by the local lint pass
+	// (see lint.Summaries); the model is told not to repeat them.
+	PreFlagged []string
 }
+
+// maxPreFlagged caps the "already flagged" list in the prompt.
+const maxPreFlagged = 25
 
 // BuildSegments assembles the prompt as ordered segments with cache
 // checkpoints after the static prefix and after the context files. The
@@ -164,6 +170,19 @@ A specification is provided (role="spec"). In addition to the review, fill "cove
 		tail.WriteString("Report only CRITICAL findings; the caller discards WARN and INFO.\n")
 	case 1:
 		tail.WriteString("Report only WARN and CRITICAL findings; the caller discards INFO.\n")
+	}
+	if len(opts.PreFlagged) > 0 {
+		tail.WriteString("\n## Already Flagged Locally\n\nA local text check already recorded these as INFO candidates. Do not restate them at INFO. If you can confirm one is a real problem, report it yourself at the severity it deserves (WARN or CRITICAL) with your own explanation; it will replace the local candidate.\n")
+		shown := opts.PreFlagged
+		if len(shown) > maxPreFlagged {
+			shown = shown[:maxPreFlagged]
+		}
+		for _, s := range shown {
+			fmt.Fprintf(&tail, "- %s\n", s)
+		}
+		if extra := len(opts.PreFlagged) - len(shown); extra > 0 {
+			fmt.Fprintf(&tail, "- (%d more)\n", extra)
+		}
 	}
 	if opts.Shape.Patches {
 		tail.WriteString("Include \"patches\": unified diffs against the plan text for the most valuable fixes, at most 5.\n")

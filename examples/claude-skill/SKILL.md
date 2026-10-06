@@ -81,6 +81,10 @@ If context is thin or the codebase is unfamiliar, add `--strict`. This forces th
    - `EXECUTABLE_WITH_CLARIFICATIONS` → list the questions, wait for answers, recommend re-running plancritic after the plan is updated.
    - `NOT_EXECUTABLE` → halt. The plan must be revised before any code is written. Offer concrete patch suggestions from the JSON or from the `--patch-out` diff.
 
+## Wording Iterations
+
+While rewording a plan (vague phrases, TODOs, empty sections) run `plancritic lint PLAN.md --format compact` between edits: it is instant and costs no tokens. Use `check` once the structure is settled.
+
 ## Re-run Discipline
 
 After the user revises PLAN.md, re-run plancritic with the same flags plus

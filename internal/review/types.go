@@ -56,6 +56,10 @@ type Issue struct {
 	Tags           []string   `json:"tags,omitempty"`
 	// Fingerprint identifies the finding across runs (see fingerprint.go).
 	Fingerprint string `json:"fingerprint,omitempty"`
+	// Occurrences is every plan line a local lint finding matched, before
+	// the evidence cap. It is in-process only (never serialized) and lets
+	// a model confirmation remove occurrences one by one.
+	Occurrences []int `json:"-"`
 }
 
 // Question represents an ambiguity that must be resolved.
