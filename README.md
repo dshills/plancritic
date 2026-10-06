@@ -49,6 +49,12 @@ plancritic check plan.md
 # Markdown report
 plancritic check plan.md --format md
 
+# Compact report for a coding agent: one line per finding, no quotes
+plancritic check plan.md --format compact
+
+# Full JSON to a file, one-line verdict on stdout
+plancritic check plan.md --out review.json --quiet
+
 # With context files and a specific profile
 plancritic check plan.md --context constraints.md --context tree.txt --profile go-backend
 
@@ -107,8 +113,10 @@ Common overrides:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format` | `json` | Output format: `json` or `md` |
+| `--format` | `json` | Output format: `json`, `md`, or `compact` (one line per finding) |
 | `--out` | stdout | Output file path |
+| `--no-quotes` | false | Omit evidence quotes from `json`/`md` output; line references are kept |
+| `--quiet` | false | Print only the one-line verdict summary to stdout (pair with `--out`) |
 | `--context <path>` | — | Additional grounding files (repeatable) |
 | `--profile <name>` | `general` | Built-in checklist profile |
 | `--strict` | false | Strict grounding mode (see below) |
@@ -149,6 +157,26 @@ With `--strict`, the model treats everything not present in the plan or context 
 - A post-check scans descriptions for phrases suggesting fabricated repo knowledge and downgrades those issues to `UNVERIFIED`.
 
 Use strict mode when reviewing plans for unfamiliar codebases or when you want conservative, citation-only output.
+
+## Compact Format
+
+`--format compact` is for coding agents that already have the plan in context and
+pay for every token they read back. It is deterministic plain text, one line per
+finding, with `file:line` references instead of quoted text and no markup:
+
+```
+VERDICT EXECUTABLE_WITH_CLARIFICATIONS score=72 critical=1 warn=2 info=0
+ISSUE-0001 CRITICAL(blocking) CONTRADICTION PLAN.md:L4-6,SPEC.md:L12 "Dependency-free claim contradicts library use" -> Drop the libraries or remove the claim.
+ISSUE-0002 WARN TEST_GAP PLAN.md:L20 "No tests named" -> List the tests per phase.
+Q-0001 WARN PLAN.md:L30-31 "Which auth provider?" -> Blocks step 3.
+CHECK TESTING pass=2 fail=1 na=0
+CHECK TESTING FAIL "Are tests mapped to acceptance criteria?"
+```
+
+The first line is always the verdict summary; `cached` and `truncated` markers are
+appended when they apply. `--quiet` prints just that line to stdout, which pairs
+with `--out` for the full report. `--no-quotes` strips evidence quotes from the
+`json` and `md` formats while keeping line references.
 
 ## Timeouts and Retries
 

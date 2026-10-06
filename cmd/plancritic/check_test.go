@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1162,5 +1163,105 @@ func TestRunCheckRepairRaisesSmallMaxTokens(t *testing.T) {
 	}
 	if got := mock.settings[1].MaxTokens; got < 8192 {
 		t.Errorf("repair call should get at least 8192 output tokens, got %d", got)
+	}
+}
+
+// --- compact format, --no-quotes, --quiet ---
+
+// captureStdout runs fn with os.Stdout redirected and returns what it wrote.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	fn()
+	_ = w.Close()
+	os.Stdout = orig
+	return <-done
+}
+
+func TestRunCheckCompactFormat(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+	f := cacheTestFlags(t, mock)
+	f.format = "compact"
+	f.out = ""
+	out := captureStdout(t, func() {
+		if err := runCheck(context.Background(), planPath, f); err != nil {
+			t.Error(err)
+		}
+	})
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected header + 1 issue + 1 question, got %d lines:\n%s", len(lines), out)
+	}
+	if !strings.HasPrefix(lines[0], "VERDICT NOT_EXECUTABLE score=80 critical=1") {
+		t.Errorf("header = %q", lines[0])
+	}
+	if lines[1] != `ISSUE-0001 CRITICAL(blocking) CONTRADICTION plan.md:L1 "Test issue" -> fix it` {
+		t.Errorf("issue line = %q", lines[1])
+	}
+	if lines[2] != `Q-0001 WARN plan.md:L1 "What?" -> Because` {
+		t.Errorf("question line = %q", lines[2])
+	}
+	if strings.Contains(out, "# Plan") {
+		t.Error("compact output must not include quoted plan text")
+	}
+}
+
+func TestRunCheckNoQuotesDropsQuoteField(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+	f := cacheTestFlags(t, mock)
+	f.noQuotes = true
+	if err := runCheck(context.Background(), planPath, f); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(f.out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"quote"`) {
+		t.Error("--no-quotes JSON should omit the quote field entirely")
+	}
+	if !strings.Contains(string(data), `"line_start": 1`) {
+		t.Error("line references must be kept")
+	}
+}
+
+func TestRunCheckQuietPrintsHeaderOnly(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n1. Step A")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+	f := cacheTestFlags(t, mock)
+	f.quiet = true
+	out := captureStdout(t, func() {
+		if err := runCheck(context.Background(), planPath, f); err != nil {
+			t.Error(err)
+		}
+	})
+	if strings.Count(out, "\n") != 1 || !strings.HasPrefix(out, "VERDICT NOT_EXECUTABLE ") {
+		t.Errorf("--quiet should print exactly the header line, got %q", out)
+	}
+	if _, err := os.Stat(f.out); err != nil {
+		t.Errorf("full output should still be written to --out: %v", err)
+	}
+}
+
+func TestRunCheckUnknownFormatListsValidOnes(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	f := cacheTestFlags(t, &llm.MockProvider{Response: validMockResponse()})
+	f.format = "yaml"
+	err := runCheck(context.Background(), planPath, f)
+	assertExitCode(t, err, 3)
+	if !strings.Contains(err.Error(), "compact") {
+		t.Errorf("error should list the valid formats, got %v", err)
 	}
 }

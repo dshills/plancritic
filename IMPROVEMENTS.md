@@ -181,6 +181,12 @@ Build the HTTP client with no `Timeout` and rely solely on the per-request conte
 
 ### 7. Add an agent-oriented compact output format  — Tokens (agent side), Speed
 
+**Status: done.** `--format compact` (`render.Compact`) emits a `VERDICT` header plus one
+line per issue, question, patch, and checklist with `file:line` references, title,
+recommendation, blocking marker, and tags; descriptions, impact, quotes, and markup are
+omitted. `--quiet` prints only the header line to stdout, `--no-quotes` drops evidence
+quotes from json/md. The SDK facade's `RenderReview` accepts `compact`.
+
 **Evidence:** Agents read the result back into their own context. The default output is
 2-space-indented JSON that includes the reconstructed `quote` for every evidence entry, the
 `input` hash block, `meta`, and `impact`/`recommendation` prose. For the 35-line sample plan

@@ -148,8 +148,10 @@ func RenderReview(review *Review, format string) ([]byte, error) {
 		return json.MarshalIndent(review, "", "  ")
 	case "md":
 		return []byte(render.Markdown(review)), nil
+	case "compact":
+		return []byte(render.Compact(review)), nil
 	default:
-		return nil, fmt.Errorf("unknown format: %s", format)
+		return nil, fmt.Errorf("unknown format: %s (valid: json, md, compact)", format)
 	}
 }
 

@@ -21,6 +21,8 @@ import (
 type checkFlags struct {
 	format            string
 	out               string
+	noQuotes          bool
+	quiet             bool
 	contextPaths      []string
 	profileName       string
 	strict            bool
@@ -62,8 +64,10 @@ func newCheckCmd() *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.StringVar(&f.format, "format", envStr("PLANCRITIC_FORMAT", "json"), "Output format: json or md")
+	flags.StringVar(&f.format, "format", envStr("PLANCRITIC_FORMAT", "json"), "Output format: json, md, or compact (one line per finding, for agents)")
 	flags.StringVar(&f.out, "out", "", "Output file path (default: stdout)")
+	flags.BoolVar(&f.noQuotes, "no-quotes", envBool("PLANCRITIC_NO_QUOTES", false), "Omit evidence quotes from json/md output (line references are kept)")
+	flags.BoolVar(&f.quiet, "quiet", envBool("PLANCRITIC_QUIET", false), "Print only the one-line verdict summary to stdout (pair with --out)")
 	flags.StringSliceVar(&f.contextPaths, "context", nil, "Context file paths (may be repeated)")
 	flags.StringVar(&f.profileName, "profile", envStr("PLANCRITIC_PROFILE", "general"), "Profile name")
 	flags.BoolVar(&f.strict, "strict", envBool("PLANCRITIC_STRICT", false), "Enable strict grounding mode")
@@ -91,8 +95,10 @@ func newCheckCmd() *cobra.Command {
 }
 
 func runCheck(ctx context.Context, planPath string, f *checkFlags) error {
-	if f.format != "json" && f.format != "md" {
-		return exitError(3, "unknown format: %s", f.format)
+	switch f.format {
+	case "json", "md", "compact":
+	default:
+		return exitError(3, "unknown format: %s (valid: json, md, compact)", f.format)
 	}
 
 	rev, err := runReview(ctx, planPath, f)
@@ -103,6 +109,9 @@ func runCheck(ctx context.Context, planPath string, f *checkFlags) error {
 	verbose := verboseLogger(f.verbose)
 
 	// 12. Output
+	if f.noQuotes {
+		review.StripQuotes(&rev)
+	}
 	var output string
 	switch f.format {
 	case "json":
@@ -113,6 +122,8 @@ func runCheck(ctx context.Context, planPath string, f *checkFlags) error {
 		output = string(data) + "\n"
 	case "md":
 		output = render.Markdown(&rev)
+	case "compact":
+		output = render.Compact(&rev)
 	}
 
 	if f.out != "" {
@@ -120,6 +131,11 @@ func runCheck(ctx context.Context, planPath string, f *checkFlags) error {
 		if err := os.WriteFile(f.out, []byte(output), 0644); err != nil {
 			return fmt.Errorf("failed to write output: %w", err)
 		}
+		if f.quiet {
+			fmt.Println(render.CompactHeader(&rev))
+		}
+	} else if f.quiet {
+		fmt.Println(render.CompactHeader(&rev))
 	} else {
 		fmt.Print(output)
 	}

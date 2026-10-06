@@ -90,7 +90,7 @@ type Evidence struct {
 	Path      string `json:"path"`
 	LineStart int    `json:"line_start"`
 	LineEnd   int    `json:"line_end"`
-	Quote     string `json:"quote"`
+	Quote     string `json:"quote,omitempty"`
 }
 
 // Meta records the model and settings used for the review.

@@ -96,6 +96,8 @@ After the user revises PLAN.md, re-run plancritic with the same flags. A revisio
 | `--profile <name>` | Always. Match the repo. |
 | `--strict` | Unfamiliar repos, or when the plan makes unverifiable claims about codebase state. |
 | `--format json` | Default for parsing. Use `md` only when the user asks for a human-readable report. |
+| `--format compact` | One line per finding with `file:line` references and no quotes; the cheapest way to read a result back into your own context. `--out` writes the selected format, so to keep full JSON as well run `--format json --out review.json --quiet` and read the `VERDICT` line from stdout. |
+| `--quiet` | Print only the `VERDICT` line to stdout; pair with `--out`. |
 | `--out <path>` | Always write JSON to a file so it can be re-read. |
 | `--patch-out <path>` | Always — costs nothing and gives the user an applyable diff if patches are suggested. |
 | `--fail-on not_executable` | Hard gate. Use in CI and in manual runs where blocking matters. |

@@ -25,3 +25,19 @@ func FilterQuestionsBySeverity(questions []Question, threshold string) []Questio
 	}
 	return result
 }
+
+// StripQuotes clears every evidence quote. Agents that already hold the
+// plan in context pay for quotes twice; --no-quotes lets them keep the
+// line references only.
+func StripQuotes(r *Review) {
+	for i := range r.Issues {
+		for j := range r.Issues[i].Evidence {
+			r.Issues[i].Evidence[j].Quote = ""
+		}
+	}
+	for i := range r.Questions {
+		for j := range r.Questions[i].Evidence {
+			r.Questions[i].Evidence[j].Quote = ""
+		}
+	}
+}
