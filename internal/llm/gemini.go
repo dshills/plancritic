@@ -44,7 +44,7 @@ func NewGemini() (*GeminiProvider, error) {
 	if key == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY environment variable not set")
 	}
-	return &GeminiProvider{apiKey: key, apiURL: geminiAPIBaseURL, client: &http.Client{Timeout: 5 * time.Minute}}, nil
+	return &GeminiProvider{apiKey: key, apiURL: geminiAPIBaseURL, client: &http.Client{}}, nil
 }
 
 func (g *GeminiProvider) Name() string { return "gemini" }
@@ -111,10 +111,13 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 
 	var respBody []byte
 	for attempt := 0; ; attempt++ {
-		status, data, err := g.post(ctx, model, reqBody)
+		res, err := sendWithRetry(ctx, "gemini", s.OnRetry, func(ctx context.Context) (httpResult, error) {
+			return g.post(ctx, model, reqBody)
+		})
 		if err != nil {
 			return "", Usage{}, err
 		}
+		status, data := res.Status, res.Body
 		if status == http.StatusOK {
 			respBody = data
 			break
@@ -163,30 +166,30 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 // post sends one generateContent request for model and returns the HTTP
 // status and raw body; a non-200 status is not an error so callers can
 // inspect the message.
-func (g *GeminiProvider) post(ctx context.Context, model string, reqBody geminiRequest) (int, []byte, error) {
+func (g *GeminiProvider) post(ctx context.Context, model string, reqBody geminiRequest) (httpResult, error) {
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
-		return 0, nil, fmt.Errorf("gemini: marshal request: %w", err)
+		return httpResult{}, fmt.Errorf("gemini: marshal request: %w", err)
 	}
 	url := fmt.Sprintf("%s/models/%s:generateContent", g.apiURL, strings.TrimPrefix(model, "models/"))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
-		return 0, nil, fmt.Errorf("gemini: create request: %w", err)
+		return httpResult{}, fmt.Errorf("gemini: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("gemini: request failed: %w", err)
+		return httpResult{}, fmt.Errorf("gemini: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("gemini: read response: %w", err)
+		return httpResult{}, fmt.Errorf("gemini: read response: %w", err)
 	}
-	return resp.StatusCode, data, nil
+	return httpResult{Status: resp.StatusCode, Body: data, RetryAfter: resp.Header.Get("Retry-After")}, nil
 }
 
 // CreateCache uploads the cacheable prefix as a Gemini context-cache

@@ -157,6 +157,15 @@ INFO items that `--severity-threshold warn` will drop.
 
 ### 6. Retry transient provider errors; fix the hidden 5-minute client timeout  — Speed/Throughput, Accuracy
 
+**Status: done.** `llm.sendWithRetry` wraps every provider request: 408/429/5xx/529 and
+transport errors are retried up to three times with exponential backoff plus jitter,
+honoring `Retry-After` (seconds or HTTP date), capped at 30s; other 4xx are returned
+immediately so the feature-fallback logic from item 3 still runs; a cancelled context
+is never retried. Exhaustion produces an error naming the status and attempt count.
+Retries are reported through `Settings.OnRetry`, which the reviewer routes to
+`--verbose`. The providers' fixed 5-minute `http.Client` timeout is gone, so
+`--timeout` is the only bound.
+
 **Evidence:** No provider retries on 429, 500-503, 529 (Anthropic overloaded), or connection
 reset. In an agent loop a single transient error aborts the run with exit 4 and the agent
 either gives up on the gate or re-runs from scratch (paying full tokens again). Separately,

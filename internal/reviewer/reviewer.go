@@ -272,6 +272,9 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 		// the source; the prompt still carries the same schema as text
 		// for providers (and models) without it.
 		OutputSchema: schema.ModelOutputSchemaJSON(shape),
+		OnRetry: func(attempt int, reason string, delay time.Duration) {
+			verbose("Provider request %d failed (%s); retrying in %s", attempt, reason, delay.Round(time.Millisecond))
+		},
 	}
 	if f.HasSeed {
 		settings.Seed = &f.Seed

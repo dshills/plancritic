@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 )
 
 const (
@@ -30,7 +29,7 @@ func NewOpenAI() (*OpenAIProvider, error) {
 	if key == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY environment variable not set")
 	}
-	return &OpenAIProvider{apiKey: key, apiURL: openaiAPIURL, client: &http.Client{Timeout: 5 * time.Minute}}, nil
+	return &OpenAIProvider{apiKey: key, apiURL: openaiAPIURL, client: &http.Client{}}, nil
 }
 
 func (o *OpenAIProvider) Name() string { return "openai" }
@@ -70,10 +69,13 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 
 	var respBody []byte
 	for attempt := 0; ; attempt++ {
-		status, data, err := o.post(ctx, reqBody)
+		res, err := sendWithRetry(ctx, "openai", s.OnRetry, func(ctx context.Context) (httpResult, error) {
+			return o.post(ctx, reqBody)
+		})
 		if err != nil {
 			return "", Usage{}, err
 		}
+		status, data := res.Status, res.Body
 		if status == http.StatusOK {
 			respBody = data
 			break
@@ -115,29 +117,29 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 
 // post sends one Chat Completions request and returns the HTTP status
 // and raw body; a non-200 status is not an error so callers can inspect it.
-func (o *OpenAIProvider) post(ctx context.Context, reqBody openaiRequest) (int, []byte, error) {
+func (o *OpenAIProvider) post(ctx context.Context, reqBody openaiRequest) (httpResult, error) {
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return 0, nil, fmt.Errorf("openai: marshal request: %w", err)
+		return httpResult{}, fmt.Errorf("openai: marshal request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiURL, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, fmt.Errorf("openai: create request: %w", err)
+		return httpResult{}, fmt.Errorf("openai: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
 
 	resp, err := o.client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("openai: request failed: %w", err)
+		return httpResult{}, fmt.Errorf("openai: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("openai: read response: %w", err)
+		return httpResult{}, fmt.Errorf("openai: read response: %w", err)
 	}
-	return resp.StatusCode, data, nil
+	return httpResult{Status: resp.StatusCode, Body: data, RetryAfter: resp.Header.Get("Retry-After")}, nil
 }
 
 // openaiSupportsStructuredOutput reports whether model accepts

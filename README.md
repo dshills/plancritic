@@ -150,6 +150,14 @@ With `--strict`, the model treats everything not present in the plan or context 
 
 Use strict mode when reviewing plans for unfamiliar codebases or when you want conservative, citation-only output.
 
+## Timeouts and Retries
+
+`--timeout` (default `5m`) bounds the whole model call, including retries. Transient
+provider failures (HTTP 408, 429, 500, 502, 503, 504, 529, and dropped connections)
+are retried up to three times with exponential backoff and jitter, honoring a
+`Retry-After` header when the provider sends one. Validation errors (other 4xx) are
+never retried. `--verbose` prints each retry with its reason and delay.
+
 ## Result Cache
 
 Every completed review is stored locally, keyed by a hash of the exact prompt

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 )
 
 const (
@@ -31,7 +30,7 @@ func NewAnthropic() (*AnthropicProvider, error) {
 	if key == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
 	}
-	return &AnthropicProvider{apiKey: key, apiURL: anthropicAPIURL, client: &http.Client{Timeout: 5 * time.Minute}}, nil
+	return &AnthropicProvider{apiKey: key, apiURL: anthropicAPIURL, client: &http.Client{}}, nil
 }
 
 func (a *AnthropicProvider) Name() string { return "anthropic" }
@@ -89,10 +88,13 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 
 	var respBody []byte
 	for attempt := 0; ; attempt++ {
-		status, data, err := a.post(ctx, reqBody)
+		res, err := sendWithRetry(ctx, "anthropic", s.OnRetry, func(ctx context.Context) (httpResult, error) {
+			return a.post(ctx, reqBody)
+		})
 		if err != nil {
 			return "", Usage{}, err
 		}
+		status, data := res.Status, res.Body
 		if status == http.StatusOK {
 			respBody = data
 			break
@@ -146,14 +148,14 @@ func (a *AnthropicProvider) GenerateSegments(ctx context.Context, segments []Seg
 // post sends one Messages API request and returns the HTTP status and
 // raw body. Transport and read failures are returned as errors; a
 // non-200 status is not, so the caller can inspect the message.
-func (a *AnthropicProvider) post(ctx context.Context, reqBody anthropicRequest) (int, []byte, error) {
+func (a *AnthropicProvider) post(ctx context.Context, reqBody anthropicRequest) (httpResult, error) {
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return 0, nil, fmt.Errorf("anthropic: marshal request: %w", err)
+		return httpResult{}, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.apiURL, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, fmt.Errorf("anthropic: create request: %w", err)
+		return httpResult{}, fmt.Errorf("anthropic: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", a.apiKey)
@@ -162,15 +164,15 @@ func (a *AnthropicProvider) post(ctx context.Context, reqBody anthropicRequest) 
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("anthropic: request failed: %w", err)
+		return httpResult{}, fmt.Errorf("anthropic: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("anthropic: read response: %w", err)
+		return httpResult{}, fmt.Errorf("anthropic: read response: %w", err)
 	}
-	return resp.StatusCode, data, nil
+	return httpResult{Status: resp.StatusCode, Body: data, RetryAfter: resp.Header.Get("Retry-After")}, nil
 }
 
 type anthropicRequest struct {

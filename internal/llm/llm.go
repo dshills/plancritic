@@ -25,6 +25,9 @@ type Settings struct {
 	// through (Anthropic output_config, OpenAI json_schema, Gemini
 	// responseJsonSchema); others ignore it and rely on the prompt.
 	OutputSchema json.RawMessage
+	// OnRetry, when set, is called before each retry of a transient
+	// provider failure so callers can log it.
+	OnRetry RetryNotify
 }
 
 // Usage reports token counts for a single request. Cache-related fields

@@ -616,6 +616,7 @@ func TestGeminiProviderGenerate(t *testing.T) {
 }
 
 func TestGeminiNon200Status(t *testing.T) {
+	noSleep(t) // 429 is retried; do not wait for real backoff
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
@@ -834,6 +835,7 @@ func TestExtractJSON(t *testing.T) {
 // --- Anthropic error path tests ---
 
 func TestAnthropicNon200Status(t *testing.T) {
+	noSleep(t) // 429 is retried; do not wait for real backoff
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
@@ -935,6 +937,7 @@ func TestAnthropicEmptyContentBlocks(t *testing.T) {
 // --- OpenAI error path tests ---
 
 func TestOpenAINon200Status(t *testing.T) {
+	noSleep(t) // 500 is retried; do not wait for real backoff
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error": "server error"}`))
