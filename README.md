@@ -43,8 +43,15 @@ Defaults are the current generation per provider: `claude-opus-5-5`, `gpt-5.2`, 
 cheaper tier (`claude-sonnet-5-5`, `gpt-5-mini`, `gemini-2.5-flash-lite`) and keep
 the default for the final gate, and `--effort low|medium|high|xhigh|max` to trade
 reasoning depth for speed and cost on models that support it (Anthropic
-`output_config.effort`, OpenAI `reasoning_effort`, Gemini `thinkingLevel`; a model
-that rejects the control is retried without it). Both affect the result-cache key.
+`output_config.effort`, OpenAI `reasoning_effort`, Gemini `thinkingLevel` on 3.x and a `thinkingBudget` on 2.5;
+a model that rejects the control is retried without it). Both affect the result-cache key.
+
+Gemini counts thinking against `--max-tokens`, and at Gemini 3's own default level
+(`high`) `gemini-3-flash-preview` was measured thinking until the cap in two of three
+runs, leaving too little room for the review. Without `--effort`, plancritic
+therefore asks Gemini 3 for `medium`, which is much faster and shallower; pass
+`--effort high` for deeper reviews. On Gemini 2.5 the budget never exceeds half of
+`--max-tokens`. Verbose token lines show thinking separately as `+N reasoning`.
 
 > **Privacy note:** Input content (plan and context files, after redaction) is sent to the configured model provider. Redaction is enabled by default.
 

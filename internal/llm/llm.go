@@ -76,6 +76,11 @@ type Usage struct {
 	OutputTokens             int
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
+	// ReasoningTokens counts hidden thinking tokens the provider reports
+	// separately from visible output (Gemini thoughtsTokenCount, OpenAI
+	// reasoning_tokens). They count against the output cap on those
+	// providers. Zero when not reported.
+	ReasoningTokens int
 }
 
 // Provider generates text from a prompt using an LLM. Usage reports

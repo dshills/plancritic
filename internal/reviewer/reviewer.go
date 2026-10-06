@@ -444,6 +444,13 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			if partial == "" {
 				partial = result
 			}
+			if f.Debug {
+				// Keep what the model actually sent; the salvaged text
+				// written below would hide where it stopped.
+				if p, err := writeDebugFile(f.DebugDir, "plancritic-debug-partial-*.txt", []byte(partial)); err == nil {
+					verbose("Wrote truncated raw response to %s", p)
+				}
+			}
 			salvaged, ok := llm.SalvageJSON(llm.ExtractJSON(partial))
 			if !ok {
 				return review.Review{}, false, 0, Errorf(4, "LLM output truncated at max_tokens=%d and nothing complete could be salvaged; raise --max-tokens", te.MaxTokens)
@@ -454,11 +461,16 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			truncatedAt = te.MaxTokens
 		}
 		verbose("Received LLM response (%d bytes)", len(result))
-		if callUsage.CacheReadInputTokens > 0 || callUsage.CacheCreationInputTokens > 0 {
-			verbose("Token usage: input=%d (cache read=%d, cache write=%d), output=%d",
-				callUsage.InputTokens, callUsage.CacheReadInputTokens, callUsage.CacheCreationInputTokens, callUsage.OutputTokens)
-		} else if callUsage.InputTokens > 0 {
-			verbose("Token usage: input=%d, output=%d", callUsage.InputTokens, callUsage.OutputTokens)
+		if callUsage.InputTokens > 0 || callUsage.CacheReadInputTokens > 0 || callUsage.CacheCreationInputTokens > 0 || callUsage.OutputTokens > 0 {
+			line := fmt.Sprintf("Token usage: input=%d", callUsage.InputTokens)
+			if callUsage.CacheReadInputTokens > 0 || callUsage.CacheCreationInputTokens > 0 {
+				line += fmt.Sprintf(" (cache read=%d, cache write=%d)", callUsage.CacheReadInputTokens, callUsage.CacheCreationInputTokens)
+			}
+			line += fmt.Sprintf(", output=%d", callUsage.OutputTokens)
+			if callUsage.ReasoningTokens > 0 {
+				line += fmt.Sprintf(" (+%d reasoning)", callUsage.ReasoningTokens)
+			}
+			verbose("%s", line)
 		}
 
 		if f.Debug {

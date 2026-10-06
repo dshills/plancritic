@@ -379,3 +379,40 @@ func TestAutoFixCoverage(t *testing.T) {
 		t.Errorf("coverage should validate after AutoFix, got %v", errs)
 	}
 }
+
+func TestModelOutputSchemaJSONPropertyOrder(t *testing.T) {
+	raw := string(ModelOutputSchemaJSON(OutputShape{Coverage: true, Patches: true, Checklists: true}))
+	// Top-level generation order: findings first, summary last.
+	idx := func(key string) int {
+		i := strings.Index(raw, `"`+key+`":{"type"`)
+		if i < 0 {
+			t.Fatalf("top-level key %q not found", key)
+		}
+		return i
+	}
+	order := []string{"issues", "questions", "coverage", "patches", "checklists", "summary"}
+	for n := 1; n < len(order); n++ {
+		if idx(order[n-1]) > idx(order[n]) {
+			t.Errorf("%q must be serialized before %q", order[n-1], order[n])
+		}
+	}
+	// Nested objects follow their required list too: evidence starts
+	// with source and ends with line_end, not alphabetically.
+	if !strings.Contains(raw, `"properties":{"source":`) || strings.Contains(raw, `"properties":{"line_end":`) {
+		t.Error("evidence properties should be ordered source, path, line_start, line_end")
+	}
+	// Keywords come in a fixed order.
+	if !strings.HasPrefix(raw, `{"type":"object","properties":{"issues":`) {
+		t.Errorf("unexpected prefix: %.80s", raw)
+	}
+	// Still valid JSON with identical content to the map form.
+	var viaOrdered, viaMap any
+	if err := json.Unmarshal([]byte(raw), &viaOrdered); err != nil {
+		t.Fatal(err)
+	}
+	mapJSON, _ := json.Marshal(ModelOutputSchema(OutputShape{Coverage: true, Patches: true, Checklists: true}))
+	_ = json.Unmarshal(mapJSON, &viaMap)
+	if !reflect.DeepEqual(viaOrdered, viaMap) {
+		t.Error("ordered serialization must carry the same content as json.Marshal")
+	}
+}

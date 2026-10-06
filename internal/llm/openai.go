@@ -115,8 +115,9 @@ func (o *OpenAIProvider) Generate(ctx context.Context, prompt string, s Settings
 	}
 
 	usage := Usage{
-		InputTokens:  result.Usage.PromptTokens,
-		OutputTokens: result.Usage.CompletionTokens,
+		InputTokens:     result.Usage.PromptTokens,
+		OutputTokens:    result.Usage.CompletionTokens,
+		ReasoningTokens: result.Usage.CompletionTokensDetails.ReasoningTokens,
 	}
 
 	if len(result.Choices) == 0 {
@@ -233,6 +234,9 @@ type openaiChoice struct {
 }
 
 type openaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens            int `json:"prompt_tokens"`
+	CompletionTokens        int `json:"completion_tokens"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }

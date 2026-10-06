@@ -1,6 +1,10 @@
 package schema
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"sort"
+)
 
 // ModelOutputSchema is the JSON Schema the model's response must satisfy.
 // It is the model-facing subset of schema/review.v1.json: fields the
@@ -106,12 +110,22 @@ func ModelOutputSchema(shape OutputShape) map[string]any {
 		"out_of_scope": arr(scopeItem),
 	}, []string{"requirements", "out_of_scope"})
 
+	// The required list doubles as the generation order (see
+	// ModelOutputSchemaJSON): providers with structured output emit
+	// properties in schema order, so the most valuable sections come
+	// first and survive if the response is cut off at the output cap.
+	// The summary goes last because its only field, the verdict, is
+	// recomputed locally from the issues.
 	props := map[string]any{
-		"summary":   summary,
-		"questions": arr(question),
 		"issues":    arr(issue),
+		"questions": arr(question),
+		"summary":   summary,
 	}
-	required := []string{"summary", "questions", "issues"}
+	required := []string{"issues", "questions"}
+	if shape.Coverage {
+		props["coverage"] = coverage
+		required = append(required, "coverage")
+	}
 	if shape.Patches {
 		props["patches"] = arr(patch)
 		required = append(required, "patches")
@@ -120,22 +134,117 @@ func ModelOutputSchema(shape OutputShape) map[string]any {
 		props["checklists"] = arr(checklist)
 		required = append(required, "checklists")
 	}
-	if shape.Coverage {
-		props["coverage"] = coverage
-		required = append(required, "coverage")
-	}
+	required = append(required, "summary")
 	return obj(props, required)
 }
 
 // ModelOutputSchemaJSON returns ModelOutputSchema serialized for
-// embedding in provider requests.
+// embedding in provider requests. Unlike json.Marshal, which sorts map
+// keys alphabetically, it writes each object's properties in the order
+// of its "required" list. Providers with structured output generate
+// properties in schema order, so alphabetical order would put
+// "coverage" ahead of "issues" and lose every issue when a long
+// response is truncated.
 func ModelOutputSchemaJSON(shape OutputShape) json.RawMessage {
-	data, err := json.Marshal(ModelOutputSchema(shape))
-	if err != nil {
+	var b bytes.Buffer
+	if err := writeOrdered(&b, ModelOutputSchema(shape)); err != nil {
 		// The schema is a static literal; a marshal failure is a bug.
 		panic("schema: marshal model output schema: " + err.Error())
 	}
-	return data
+	return b.Bytes()
+}
+
+// schemaKeyOrder fixes the order of JSON Schema keywords within a node.
+var schemaKeyOrder = []string{"type", "description", "enum", "properties", "required", "additionalProperties", "items"}
+
+// writeOrdered serializes schema nodes deterministically: keywords in
+// schemaKeyOrder, and "properties" in the order of the sibling
+// "required" list. Values that are not maps are marshaled normally.
+func writeOrdered(b *bytes.Buffer, v any) error {
+	m, ok := v.(map[string]any)
+	if !ok {
+		data, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		b.Write(data)
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	seen := make(map[string]bool, len(m))
+	for _, k := range schemaKeyOrder {
+		if _, ok := m[k]; ok {
+			keys = append(keys, k)
+			seen[k] = true
+		}
+	}
+	var rest []string
+	for k := range m {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	keys = append(keys, rest...)
+
+	b.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		kj, _ := json.Marshal(k)
+		b.Write(kj)
+		b.WriteByte(':')
+		if k == "properties" {
+			props, _ := m[k].(map[string]any)
+			req, _ := m["required"].([]string)
+			if err := writeProperties(b, props, req); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := writeOrdered(b, m[k]); err != nil {
+			return err
+		}
+	}
+	b.WriteByte('}')
+	return nil
+}
+
+// writeProperties writes props in the order of required, then any
+// remaining keys alphabetically.
+func writeProperties(b *bytes.Buffer, props map[string]any, required []string) error {
+	order := make([]string, 0, len(props))
+	seen := make(map[string]bool, len(props))
+	for _, k := range required {
+		if _, ok := props[k]; ok && !seen[k] {
+			order = append(order, k)
+			seen[k] = true
+		}
+	}
+	var rest []string
+	for k := range props {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	order = append(order, rest...)
+
+	b.WriteByte('{')
+	for i, k := range order {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		kj, _ := json.Marshal(k)
+		b.Write(kj)
+		b.WriteByte(':')
+		if err := writeOrdered(b, props[k]); err != nil {
+			return err
+		}
+	}
+	b.WriteByte('}')
+	return nil
 }
 
 func obj(props map[string]any, required []string) map[string]any {

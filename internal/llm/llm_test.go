@@ -1655,17 +1655,17 @@ func TestOpenAIReasoningEffortStepsDownThenDrops(t *testing.T) {
 	}
 }
 
-func TestGeminiThinkingLevel(t *testing.T) {
+func TestGeminiThinkingBudget(t *testing.T) {
 	noSleep(t)
 	var bodies []map[string]any
+	reject := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var b map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&b)
 		bodies = append(bodies, b)
-		gc := b["generationConfig"].(map[string]any)
-		if tc, _ := gc["thinkingConfig"].(map[string]any); tc["thinkingLevel"] == "high" {
+		if gc := b["generationConfig"].(map[string]any); reject && gc["thinkingConfig"] != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Invalid value at 'generation_config.thinking_config.thinking_level'","status":"INVALID_ARGUMENT"}}`))
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Thinking is not supported by this model.","status":"INVALID_ARGUMENT"}}`))
 			return
 		}
 		_ = json.NewEncoder(w).Encode(geminiResponse{Candidates: []geminiCandidate{{Content: geminiContent{Parts: []geminiPart{{Text: "{}"}}}, FinishReason: "STOP"}}})
@@ -1673,40 +1673,72 @@ func TestGeminiThinkingLevel(t *testing.T) {
 	defer srv.Close()
 	p := &GeminiProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
 
-	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "gemini-3-flash-preview", Effort: "medium"}); err != nil {
-		t.Fatal(err)
-	}
-	gc := bodies[0]["generationConfig"].(map[string]any)
-	if tc, _ := gc["thinkingConfig"].(map[string]any); tc["thinkingLevel"] != "medium" || tc["thinkingBudget"] != nil {
-		t.Errorf("Gemini 3: effort medium should become thinkingLevel medium: %v", gc)
-	}
-
-	bodies = nil
-	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: FastModel("gemini"), Effort: "low"}); err != nil {
-		t.Fatal(err)
-	}
-	gc = bodies[0]["generationConfig"].(map[string]any)
-	if tc, _ := gc["thinkingConfig"].(map[string]any); tc["thinkingBudget"] != float64(1024) || tc["thinkingLevel"] != nil {
-		t.Errorf("Gemini 2.5 (the fast tier): effort low should become thinkingBudget 1024: %v", gc)
-	}
-	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "models/gemini-2.5-pro", Effort: "max"}); err != nil {
-		t.Fatal(err)
-	}
-	gc = bodies[len(bodies)-1]["generationConfig"].(map[string]any)
-	if tc, _ := gc["thinkingConfig"].(map[string]any); tc["thinkingBudget"] != float64(24576) {
-		t.Errorf("Gemini 2.5: effort max should become the top budget: %v", gc)
+	thinking := func(model, effort string, maxTokens int) map[string]any {
+		bodies = nil
+		if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: model, Effort: effort, MaxTokens: maxTokens}); err != nil {
+			t.Fatal(err)
+		}
+		tc, _ := bodies[0]["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
+		if tc["thinkingLevel"] != nil && tc["thinkingBudget"] != nil {
+			t.Errorf("never send both thinkingLevel and thinkingBudget: %v", tc)
+		}
+		return tc
 	}
 
+	// Gemini 2.5: numeric budgets, never more than half the cap.
+	budgets := []struct {
+		effort    string
+		maxTokens int
+		want      float64
+	}{
+		{"", 65536, 24576},
+		{"", 16384, 8192},
+		{"low", 65536, 1024},
+		{"medium", 65536, 8192},
+		{"high", 65536, 16384},
+		{"max", 65536, 24576},
+		{"max", 16384, 8192},
+		{"high", 200, 128},
+	}
+	for _, tt := range budgets {
+		if got := thinking("gemini-2.5-flash", tt.effort, tt.maxTokens)["thinkingBudget"]; got != tt.want {
+			t.Errorf("2.5 effort=%q max=%d: thinkingBudget = %v, want %v", tt.effort, tt.maxTokens, got, tt.want)
+		}
+	}
+
+	// Gemini 3: levels; default medium instead of the model's "high".
+	levels := map[string]string{"": "medium", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
+	for effort, want := range levels {
+		if got := thinking("gemini-3-flash-preview", effort, 65536)["thinkingLevel"]; got != want {
+			t.Errorf("3.x effort=%q: thinkingLevel = %v, want %v", effort, got, want)
+		}
+	}
+
+	// A model that rejects thinking config is retried without it.
+	reject = true
 	bodies = nil
-	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "gemini-3-flash-preview", Effort: "max"}); err != nil {
+	if _, _, err := p.Generate(context.Background(), "hi", Settings{Model: "gemini-2.0-flash"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(bodies) != 2 || bodies[1]["generationConfig"].(map[string]any)["thinkingConfig"] != nil {
-		t.Errorf("a rejected thinking level should be dropped on retry: %v", bodies)
+		t.Errorf("rejected thinking config should be dropped on retry: %v", bodies)
 	}
 }
 
-// --- cache TTL ---
+func TestGeminiReasoningTokensReported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":42}}`))
+	}))
+	defer srv.Close()
+	p := &GeminiProvider{apiKey: "k", apiURL: srv.URL, client: srv.Client()}
+	_, u, err := p.Generate(context.Background(), "hi", Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.ReasoningTokens != 42 || u.OutputTokens != 5 {
+		t.Errorf("usage = %+v", u)
+	}
+}
 
 func TestAnthropicCacheTTL(t *testing.T) {
 	capture := func(ttl time.Duration) (map[string]any, http.Header) {
@@ -1783,5 +1815,21 @@ func TestAnthropicDropsTTLWhenRejected(t *testing.T) {
 	first := bodies[1]["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
 	if cc, _ := first["cache_control"].(map[string]any); cc == nil || cc["ttl"] != nil {
 		t.Errorf("retry should keep the breakpoint but drop the ttl: %v", first)
+	}
+}
+
+func TestSalvageKeepsIssuesWhenCutInLaterSection(t *testing.T) {
+	// Schema order puts issues first, so a response cut off inside the
+	// coverage section still salvages every issue.
+	cut := `{"issues":[{"id":"ISSUE-0001","title":"a"},{"id":"ISSUE-0002","title":"b"}],"questions":[],"coverage":{"requirements":[{"id":"REQ-0001","requ`
+	got, ok := SalvageJSON(cut)
+	if !ok {
+		t.Fatal("expected a salvageable prefix")
+	}
+	var doc struct {
+		Issues []map[string]any `json:"issues"`
+	}
+	if err := json.Unmarshal([]byte(got), &doc); err != nil || len(doc.Issues) != 2 {
+		t.Errorf("both issues should survive: %v %s", err, got)
 	}
 }

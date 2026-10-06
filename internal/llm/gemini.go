@@ -105,9 +105,11 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 	if len(s.OutputSchema) > 0 {
 		reqBody.GenerationConfig.ResponseJSONSchema = s.OutputSchema
 	}
-	if s.Effort != "" {
-		reqBody.GenerationConfig.ThinkingConfig = geminiThinking(model, s.Effort)
-	}
+	// Always set thinking explicitly. Gemini counts thoughts against
+	// maxOutputTokens, and gemini-3-flash-preview at its default ("high")
+	// was observed thinking for ~63k tokens of a 65,536 cap, leaving too
+	// little for the answer (see geminiThinking).
+	reqBody.GenerationConfig.ThinkingConfig = geminiThinking(model, s.Effort, maxTokens)
 	if s.CachedContentName != "" {
 		reqBody.CachedContent = s.CachedContentName
 	}
@@ -151,6 +153,7 @@ func (g *GeminiProvider) GenerateSegments(ctx context.Context, segments []Segmen
 		InputTokens:          result.UsageMetadata.PromptTokenCount,
 		OutputTokens:         result.UsageMetadata.CandidatesTokenCount,
 		CacheReadInputTokens: result.UsageMetadata.CachedContentTokenCount,
+		ReasoningTokens:      result.UsageMetadata.ThoughtsTokenCount,
 	}
 
 	if len(result.Candidates) == 0 {
@@ -327,12 +330,24 @@ type geminiThinkingConfig struct {
 }
 
 // geminiThinking maps the shared effort vocabulary onto the thinking
-// control the model family understands: Gemini 2.5 models take a token
-// budget (thinkingBudget), Gemini 3 and later take a level
-// (thinkingLevel, which tops out at "high").
-func geminiThinking(model, effort string) *geminiThinkingConfig {
+// control each model family actually honors.
+//
+// Gemini 2.5 models honor a numeric thinkingBudget. The budget never
+// exceeds half of maxTokens, so at least half the output allowance is
+// left for the visible answer; with no effort set it is that half,
+// capped at the top effort level.
+//
+// Gemini 3 and later take a thinkingLevel. They also accept a numeric
+// budget, but measured on gemini-3-flash-preview a large budget (24,576)
+// behaved like level "high", which is open-ended and ran to ~63k tokens
+// in two of three runs, while a budget of 1,024 behaved like "low". So a
+// budget cannot bound thinking there; the level is the real control.
+// With no effort set the level is "medium" rather than the model's
+// default "high".
+func geminiThinking(model, effort string, maxTokens int) *geminiThinkingConfig {
 	if strings.HasPrefix(strings.ToLower(strings.TrimPrefix(model, "models/")), "gemini-2.5") {
-		var budget int
+		const minBudget = 128 // smallest budget Gemini 2.5 Pro accepts
+		budget := 24576
 		switch effort {
 		case "low":
 			budget = 1024
@@ -340,14 +355,17 @@ func geminiThinking(model, effort string) *geminiThinkingConfig {
 			budget = 8192
 		case "high":
 			budget = 16384
-		default: // xhigh, max
-			budget = 24576
+		}
+		if half := maxTokens / 2; half < budget {
+			budget = max(half, minBudget)
 		}
 		return &geminiThinkingConfig{ThinkingBudget: &budget}
 	}
-	level := effort
+	level := "medium"
 	switch effort {
-	case "xhigh", "max":
+	case "low":
+		level = "low"
+	case "high", "xhigh", "max":
 		level = "high"
 	}
 	return &geminiThinkingConfig{ThinkingLevel: level}
@@ -362,6 +380,7 @@ type geminiUsageMetadata struct {
 	PromptTokenCount        int `json:"promptTokenCount"`
 	CandidatesTokenCount    int `json:"candidatesTokenCount"`
 	CachedContentTokenCount int `json:"cachedContentTokenCount"`
+	ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
 }
 
 type geminiCandidate struct {

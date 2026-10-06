@@ -359,3 +359,16 @@ func TestSpecRoleInPrompt(t *testing.T) {
 		t.Errorf("delta repair should count coverage kinds:\n%s", delta)
 	}
 }
+
+func TestSchemaTextOrder(t *testing.T) {
+	text := SchemaText(schema.OutputShape{Coverage: true, Patches: true, Checklists: true})
+	order := []string{`"issues"`, `"questions"`, `"coverage"`, `"patches"`, `"checklists"`, `"summary"`}
+	last := -1
+	for _, k := range order {
+		i := strings.Index(text, k)
+		if i < 0 || i < last {
+			t.Errorf("%s out of order in prompt schema", k)
+		}
+		last = i
+	}
+}

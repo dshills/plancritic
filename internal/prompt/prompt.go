@@ -353,23 +353,47 @@ func BuildDeltaRepair(o DeltaRepairOpts) string {
 // the optional patches/checklists sections appear only when shape asks
 // for them.
 func SchemaText(shape schema.OutputShape) string {
-	var b strings.Builder
-	b.WriteString(schemaHead)
+	// Same order as schema.ModelOutputSchema: most valuable sections
+	// first, summary last, so a response cut off at the output cap still
+	// carries the findings.
+	parts := []string{schemaIssues, schemaQuestions}
+	if shape.Coverage {
+		parts = append(parts, schemaCoverage)
+	}
 	if shape.Patches {
-		b.WriteString(schemaPatches)
+		parts = append(parts, schemaPatches)
 	}
 	if shape.Checklists {
-		b.WriteString(schemaChecklists)
+		parts = append(parts, schemaChecklists)
 	}
-	if shape.Coverage {
-		b.WriteString(schemaCoverage)
-	}
-	b.WriteString("\n}")
-	return b.String()
+	parts = append(parts, schemaSummary)
+	return "## Output JSON Schema\n\n{\n" + strings.Join(parts, ",\n") + "\n}"
 }
 
-const schemaCoverage = `,
-  "coverage": {
+const schemaIssues = `  "issues": [{
+    "id": "ISSUE-NNNN",
+    "severity": "INFO" | "WARN" | "CRITICAL",
+    "category": "CONTRADICTION"|"AMBIGUITY"|"MISSING_PREREQUISITE"|"MISSING_ACCEPTANCE_CRITERIA"|"RISK_SECURITY"|"RISK_DATA"|"RISK_OPERATIONS"|"TEST_GAP"|"SCOPE_CREEP_RISK"|"UNREALISTIC_STEP"|"ORDERING_DEPENDENCY"|"UNSPECIFIED_INTERFACE"|"NON_DETERMINISM",
+    "title": string,
+    "description": string,
+    "evidence": [{"source": "plan"|"context", "path": string, "line_start": int, "line_end": int}],
+    "impact": string,
+    "recommendation": string,
+    "blocking": boolean,
+    "tags": [string]
+  }]`
+
+const schemaQuestions = `  "questions": [{
+    "id": "Q-NNNN",
+    "severity": "INFO" | "WARN" | "CRITICAL",
+    "question": string,
+    "why_needed": string,
+    "blocks": [string],
+    "evidence": [{"source": "plan"|"context", "path": string, "line_start": int, "line_end": int}],
+    "suggested_answers": [string]
+  }]`
+
+const schemaCoverage = `  "coverage": {
     "requirements": [{
       "id": "REQ-NNNN",
       "requirement": string,
@@ -386,45 +410,19 @@ const schemaCoverage = `,
     }]
   }`
 
-const schemaHead = `## Output JSON Schema
-
-{
-  "summary": {
-    "verdict": "EXECUTABLE_AS_IS" | "EXECUTABLE_WITH_CLARIFICATIONS" | "NOT_EXECUTABLE"
-  },
-  "questions": [{
-    "id": "Q-NNNN",
-    "severity": "INFO" | "WARN" | "CRITICAL",
-    "question": string,
-    "why_needed": string,
-    "blocks": [string],
-    "evidence": [{"source": "plan"|"context", "path": string, "line_start": int, "line_end": int}],
-    "suggested_answers": [string]
-  }],
-  "issues": [{
-    "id": "ISSUE-NNNN",
-    "severity": "INFO" | "WARN" | "CRITICAL",
-    "category": "CONTRADICTION"|"AMBIGUITY"|"MISSING_PREREQUISITE"|"MISSING_ACCEPTANCE_CRITERIA"|"RISK_SECURITY"|"RISK_DATA"|"RISK_OPERATIONS"|"TEST_GAP"|"SCOPE_CREEP_RISK"|"UNREALISTIC_STEP"|"ORDERING_DEPENDENCY"|"UNSPECIFIED_INTERFACE"|"NON_DETERMINISM",
-    "title": string,
-    "description": string,
-    "evidence": [{"source": "plan"|"context", "path": string, "line_start": int, "line_end": int}],
-    "impact": string,
-    "recommendation": string,
-    "blocking": boolean,
-    "tags": [string]
-  }]`
-
-const schemaPatches = `,
-  "patches": [{
+const schemaPatches = `  "patches": [{
     "id": "PATCH-NNNN",
     "type": "PLAN_TEXT_EDIT",
     "title": string,
     "diff_unified": string
   }]`
 
-const schemaChecklists = `,
-  "checklists": [{
+const schemaChecklists = `  "checklists": [{
     "id": string,
     "title": string,
     "checks": [{"check": string, "status": "PASS"|"FAIL"|"N/A"}]
   }]`
+
+const schemaSummary = `  "summary": {
+    "verdict": "EXECUTABLE_AS_IS" | "EXECUTABLE_WITH_CLARIFICATIONS" | "NOT_EXECUTABLE"
+  }`
