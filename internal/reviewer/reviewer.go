@@ -58,6 +58,9 @@ type Options struct {
 	// response and rarely consumed by agents.
 	Patches    bool
 	Checklists bool
+	// BaselinePath, when set, is an earlier run's JSON output; the
+	// result then carries a Delta of resolved/new/persisting findings.
+	BaselinePath string
 	// ResultCacheDir overrides where cached reviews are stored. Empty
 	// selects resultcache.DefaultDir, which honors PLANCRITIC_CACHE_DIR.
 	ResultCacheDir string
@@ -89,6 +92,18 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			return review.Review{}, Errorf(3, "failed to load context %s: %v", cp, err)
 		}
 		contexts = append(contexts, cf)
+	}
+
+	// 2b. Load the baseline before spending any tokens so a bad path
+	// fails fast.
+	var baseline *review.Review
+	if f.BaselinePath != "" {
+		verbose("Loading baseline: %s", f.BaselinePath)
+		var err error
+		baseline, err = review.LoadBaseline(f.BaselinePath)
+		if err != nil {
+			return review.Review{}, Errorf(3, "%v", err)
+		}
 	}
 
 	// 3. Redact
@@ -216,6 +231,13 @@ func Run(parentCtx context.Context, planPath string, f Options, version string) 
 			Model:       modelProvider.Name() + "/" + modelName,
 			Temperature: f.Temperature,
 			Cached:      cached,
+		}
+
+		// Fingerprints need the reconstructed quotes, which every path
+		// (fresh, cached, salvaged) has by now.
+		review.AssignFingerprints(&rev)
+		if baseline != nil {
+			rev.Delta = review.ComputeDelta(baseline, &rev, f.BaselinePath)
 		}
 		return rev
 	}

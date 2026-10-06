@@ -17,9 +17,10 @@ import (
 //
 // Line formats:
 //
-//	VERDICT <verdict> score=<n> critical=<n> warn=<n> info=<n> [cached] [truncated]
+//	VERDICT <verdict> score=<n> critical=<n> warn=<n> info=<n> [cached] [truncated] [new=<n> persisting=<n> resolved=<n> score_change=<+n>]
 //	<ISSUE-ID> <SEVERITY>[(blocking)] <CATEGORY> <loc>[,<loc>...] "<title>" -> <recommendation> [tags]
 //	<Q-ID> <SEVERITY> <loc> "<question>" -> <why needed>
+//	RESOLVED <kind> <baseline id> "<title>"
 //	<PATCH-ID> "<title>" (diff available via --patch-out)
 //	CHECK <checklist id> pass=<n> fail=<n> na=<n>
 //	CHECK <checklist id> FAIL "<check>"
@@ -39,9 +40,7 @@ func Compact(r *review.Review) string {
 		if rec := oneLine(iss.Recommendation); rec != "" {
 			fmt.Fprintf(&b, " -> %s", rec)
 		}
-		if len(iss.Tags) > 0 {
-			fmt.Fprintf(&b, " [%s]", strings.Join(iss.Tags, ","))
-		}
+		writeTags(&b, r.Delta.Status("issue", iss.ID), iss.Tags)
 		b.WriteByte('\n')
 	}
 
@@ -50,7 +49,14 @@ func Compact(r *review.Review) string {
 		if why := oneLine(q.WhyNeeded); why != "" {
 			fmt.Fprintf(&b, " -> %s", why)
 		}
+		writeTags(&b, r.Delta.Status("question", q.ID), nil)
 		b.WriteByte('\n')
+	}
+
+	if r.Delta != nil {
+		for _, e := range r.Delta.Resolved {
+			fmt.Fprintf(&b, "RESOLVED %s %s %q\n", e.Kind, e.ID, oneLine(e.Title))
+		}
 	}
 
 	for _, p := range r.Patches {
@@ -94,7 +100,23 @@ func CompactHeader(r *review.Review) string {
 	if r.Meta.Truncated {
 		b.WriteString(" truncated")
 	}
+	if d := r.Delta; d != nil {
+		fmt.Fprintf(&b, " new=%d persisting=%d resolved=%d score_change=%+d", len(d.New), len(d.Persisting), len(d.Resolved), d.ScoreChange)
+	}
 	return b.String()
+}
+
+// writeTags appends " [a,b]" combining an optional delta status with the
+// finding's own tags; nothing is written when both are empty.
+func writeTags(b *strings.Builder, status string, tags []string) {
+	all := make([]string, 0, len(tags)+1)
+	if status != "" {
+		all = append(all, status)
+	}
+	all = append(all, tags...)
+	if len(all) > 0 {
+		fmt.Fprintf(b, " [%s]", strings.Join(all, ","))
+	}
 }
 
 // locs renders evidence as comma-separated file:line references. Plan

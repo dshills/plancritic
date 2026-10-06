@@ -70,9 +70,11 @@ type CheckOptions struct {
 	// grade of every profile checklist item. Both default to off.
 	Patches    bool
 	Checklists bool
-	Verbose    bool
-	Debug      bool
-	DebugDir   string
+	// BaselinePath is an earlier run\'s JSON output to diff against.
+	BaselinePath string
+	Verbose      bool
+	Debug        bool
+	DebugDir     string
 }
 
 type CheckResult struct {
@@ -132,6 +134,7 @@ func Check(ctx context.Context, opts CheckOptions) (*CheckResult, error) {
 		ResultCacheDir:    opts.ResultCacheDir,
 		Patches:           opts.Patches,
 		Checklists:        opts.Checklists,
+		BaselinePath:      opts.BaselinePath,
 		Verbose:           opts.Verbose,
 		Debug:             opts.Debug,
 		DebugDir:          opts.DebugDir,

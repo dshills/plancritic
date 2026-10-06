@@ -94,3 +94,26 @@ func TestCompactMissingEvidence(t *testing.T) {
 		t.Errorf("missing evidence should render as '-', got %q", out)
 	}
 }
+
+func TestCompactDeltaMarkers(t *testing.T) {
+	r := compactFixture()
+	review.AssignFingerprints(r)
+	r.Delta = &review.Delta{
+		BaselineFile: "prev.json", ScoreChange: 9,
+		New:        []review.DeltaEntry{{Kind: "issue", ID: "ISSUE-0002"}},
+		Persisting: []review.DeltaEntry{{Kind: "issue", ID: "ISSUE-0001"}, {Kind: "question", ID: "Q-0001"}},
+		Resolved:   []review.DeltaEntry{{Kind: "issue", ID: "ISSUE-0009", Title: "Gone now"}},
+	}
+	out := Compact(r)
+	for _, want := range []string{
+		" new=1 persisting=2 resolved=1 score_change=+9\n",
+		`"Dependency-free claim contradicts library use" -> Pick one: drop the libraries or remove the claim. [persisting]`,
+		`-> List the tests. [new,UNVERIFIED,assumption]`,
+		`"Which auth provider?" -> Blocks step 3. [persisting]`,
+		`RESOLVED issue ISSUE-0009 "Gone now"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("compact delta output missing %q:\n%s", want, out)
+		}
+	}
+}

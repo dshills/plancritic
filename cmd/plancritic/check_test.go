@@ -1265,3 +1265,84 @@ func TestRunCheckUnknownFormatListsValidOnes(t *testing.T) {
 		t.Errorf("error should list the valid formats, got %v", err)
 	}
 }
+
+// --- fingerprints and --baseline ---
+
+func TestRunCheckBaselineDelta(t *testing.T) {
+	// Run 1: a contradiction at L2 and a test gap at L3.
+	run1 := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[
+	  {"id":"ISSUE-0001","severity":"CRITICAL","category":"CONTRADICTION","title":"Deps contradiction","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}],"impact":"i","recommendation":"r","blocking":true},
+	  {"id":"ISSUE-0002","severity":"WARN","category":"TEST_GAP","title":"No tests","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":3,"line_end":3}],"impact":"i","recommendation":"r","blocking":false}
+	]}`
+	planPath := writeTempPlan(t, "# Plan\n1. No external deps\n2. Ship it")
+	f1 := cacheTestFlags(t, &llm.MockProvider{Response: run1})
+	if err := runCheck(context.Background(), planPath, f1); err != nil {
+		t.Fatal(err)
+	}
+	first := readReview(t, f1.out)
+	if first.Issues[0].Fingerprint == "" || first.Issues[1].Fingerprint == "" || first.Delta != nil {
+		t.Fatalf("run 1 should carry fingerprints and no delta: %+v", first)
+	}
+
+	// Revise: insert a line above everything (shifting line numbers), fix
+	// the deps line. The test gap persists at a new line number; the
+	// contradiction's cited text changed, so it is gone; a new issue appears.
+	run2 := `{"summary":{"verdict":"EXECUTABLE_AS_IS"},"questions":[],"issues":[
+	  {"id":"ISSUE-0001","severity":"WARN","category":"TEST_GAP","title":"Still no tests","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":4,"line_end":4}],"impact":"i","recommendation":"r","blocking":false},
+	  {"id":"ISSUE-0002","severity":"INFO","category":"AMBIGUITY","title":"Vague intro","description":"d","evidence":[{"source":"plan","path":"plan.md","line_start":2,"line_end":2}],"impact":"i","recommendation":"r","blocking":false}
+	]}`
+	if err := os.WriteFile(planPath, []byte("# Plan\nIntro: make it robust\n1. Uses libfoo (approved)\n2. Ship it"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f2 := cacheTestFlags(t, &llm.MockProvider{Response: run2})
+	f2.baseline = f1.out
+	if err := runCheck(context.Background(), planPath, f2); err != nil {
+		t.Fatal(err)
+	}
+	second := readReview(t, f2.out)
+	d := second.Delta
+	if d == nil {
+		t.Fatal("run 2 should carry a delta")
+	}
+	if d.BaselineFile != filepath.Base(f1.out) || d.BaselinePlanHash != first.Input.PlanHash {
+		t.Errorf("delta header wrong: %+v", d)
+	}
+	if len(d.Persisting) != 1 || d.Persisting[0].Title != "Still no tests" {
+		t.Errorf("the test gap moved lines but cites the same text; expected it persisting, got %+v", d.Persisting)
+	}
+	if len(d.New) != 1 || d.New[0].Title != "Vague intro" {
+		t.Errorf("new = %+v", d.New)
+	}
+	if len(d.Resolved) != 1 || d.Resolved[0].Title != "Deps contradiction" || d.Resolved[0].ID != "ISSUE-0001" {
+		t.Errorf("resolved should name the baseline finding, got %+v", d.Resolved)
+	}
+	if d.ScoreChange != second.Summary.Score-first.Summary.Score {
+		t.Errorf("score change = %d", d.ScoreChange)
+	}
+
+	// Compact rendering of the same run carries the markers.
+	f3 := cacheTestFlags(t, &llm.MockProvider{Response: run2})
+	f3.baseline = f1.out
+	f3.format = "compact"
+	if err := runCheck(context.Background(), planPath, f3); err != nil {
+		t.Fatal(err)
+	}
+	compact, _ := os.ReadFile(f3.out)
+	for _, want := range []string{"new=1 persisting=1 resolved=1", `"Still no tests" -> r [persisting]`, `"Vague intro" -> r [new]`, `RESOLVED issue ISSUE-0001 "Deps contradiction"`} {
+		if !strings.Contains(string(compact), want) {
+			t.Errorf("compact output missing %q:\n%s", want, compact)
+		}
+	}
+}
+
+func TestRunCheckBaselineErrors(t *testing.T) {
+	planPath := writeTempPlan(t, "# Plan\n")
+	mock := &llm.MockProvider{Response: validMockResponse()}
+	f := cacheTestFlags(t, mock)
+	f.baseline = filepath.Join(t.TempDir(), "missing.json")
+	err := runCheck(context.Background(), planPath, f)
+	assertExitCode(t, err, 3)
+	if mock.Calls != 0 {
+		t.Error("a bad baseline must fail before any provider call")
+	}
+}

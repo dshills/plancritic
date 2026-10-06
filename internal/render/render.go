@@ -79,6 +79,15 @@ func Markdown(r *review.Review) string {
 		}
 	}
 
+	// Changes since baseline (only present with --baseline)
+	if d := r.Delta; d != nil {
+		fmt.Fprintf(&b, "## Changes Since %s\n\n", d.BaselineFile)
+		fmt.Fprintf(&b, "Score change: %+d. New: %d, persisting: %d, resolved: %d.\n\n", d.ScoreChange, len(d.New), len(d.Persisting), len(d.Resolved))
+		renderDeltaList(&b, "Resolved", d.Resolved)
+		renderDeltaList(&b, "New", d.New)
+		renderDeltaList(&b, "Persisting", d.Persisting)
+	}
+
 	// Checklists (only present when requested with --checklists)
 	if len(r.Checklists) > 0 {
 		b.WriteString("## Checklists\n\n")
@@ -122,4 +131,15 @@ func renderIssue(b *strings.Builder, iss review.Issue) {
 	b.WriteString("\n")
 	fmt.Fprintf(b, "**Impact:** %s\n\n", iss.Impact)
 	fmt.Fprintf(b, "**Recommendation:** %s\n\n", iss.Recommendation)
+}
+
+func renderDeltaList(b *strings.Builder, heading string, entries []review.DeltaEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "**%s:**\n", heading)
+	for _, e := range entries {
+		fmt.Fprintf(b, "- %s %s [%s] %s\n", e.Kind, e.ID, e.Severity, e.Title)
+	}
+	b.WriteString("\n")
 }

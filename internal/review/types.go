@@ -11,7 +11,9 @@ type Review struct {
 	Issues     []Issue     `json:"issues"`
 	Patches    []Patch     `json:"patches,omitempty"`
 	Checklists []Checklist `json:"checklists,omitempty"`
-	Meta       Meta        `json:"meta"`
+	// Delta is present only when a --baseline was supplied.
+	Delta *Delta `json:"delta,omitempty"`
+	Meta  Meta   `json:"meta"`
 }
 
 // Input describes the files and settings used for the review.
@@ -50,6 +52,8 @@ type Issue struct {
 	Recommendation string     `json:"recommendation"`
 	Blocking       bool       `json:"blocking"`
 	Tags           []string   `json:"tags,omitempty"`
+	// Fingerprint identifies the finding across runs (see fingerprint.go).
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // Question represents an ambiguity that must be resolved.
@@ -61,6 +65,8 @@ type Question struct {
 	Blocks           []string   `json:"blocks,omitempty"`
 	Evidence         []Evidence `json:"evidence"`
 	SuggestedAnswers []string   `json:"suggested_answers,omitempty"`
+	// Fingerprint identifies the question across runs (see fingerprint.go).
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // Patch is an optional suggested edit to the plan text.

@@ -86,7 +86,10 @@ If context is thin or the codebase is unfamiliar, add `--strict`. This forces th
 
 ## Re-run Discipline
 
-After the user revises PLAN.md, re-run plancritic with the same flags. A revision that resolves the cited issues should move the verdict up and the score should rise meaningfully (>10 points). If the score barely changes, the revision did not actually address the cited evidence — say so plainly.
+After the user revises PLAN.md, re-run plancritic with the same flags plus
+`--baseline <previous JSON output>`: the result then says exactly which findings were
+resolved, which persist, and which are new (fingerprints match findings by cited text,
+not by ID or line number), so you do not have to diff two reports by hand. A revision that resolves the cited issues should move the verdict up and the score should rise meaningfully (>10 points). If the score barely changes, the revision did not actually address the cited evidence — say so plainly.
 
 ## Flag Reference (most-used)
 

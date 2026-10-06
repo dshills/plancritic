@@ -127,6 +127,7 @@ Common overrides:
 | `--severity-threshold` | `info` | Minimum severity included in output |
 | `--patch-out <path>` | — | Ask the model for plan edits and write them as a unified diff |
 | `--checklists` | false | Ask the model to grade every profile checklist item (PASS/FAIL/N/A) |
+| `--baseline <path>` | — | Earlier run's JSON output; adds a resolved/new/persisting delta to the result |
 | `--fail-on <level>` | — | Exit code 2 if verdict meets/exceeds this level |
 | `--redact` | true | Redact secrets before sending to model |
 | `--no-cache` | false | Disable all caching: provider prompt caches and the local result cache |
@@ -157,6 +158,27 @@ With `--strict`, the model treats everything not present in the plan or context 
 - A post-check scans descriptions for phrases suggesting fabricated repo knowledge and downgrades those issues to `UNVERIFIED`.
 
 Use strict mode when reviewing plans for unfamiliar codebases or when you want conservative, citation-only output.
+
+## Comparing Runs
+
+Issue IDs are assigned fresh by the model on every run, so they cannot be used to
+track a finding across revisions. Every issue and question therefore carries a
+`fingerprint`: a hash of its category and the cited text (not the line numbers, so
+edits elsewhere in the plan do not disturb it). Pass an earlier run's JSON output
+with `--baseline` and the result gains a `delta` block listing which findings were
+resolved, which persist, and which are new, plus the score change:
+
+```bash
+plancritic check PLAN.md --out run1.json
+# ... revise PLAN.md ...
+plancritic check PLAN.md --baseline run1.json --format compact
+```
+
+In compact output each finding is tagged `[new]` or `[persisting]`, resolved
+findings appear as `RESOLVED` lines, and the header gains
+`new=… persisting=… resolved=… score_change=…`. Any earlier JSON output works as a
+baseline, even one produced before fingerprints existed, as long as it kept its
+evidence quotes (fingerprints are recomputed from them).
 
 ## Compact Format
 

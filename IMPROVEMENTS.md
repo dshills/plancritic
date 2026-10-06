@@ -208,6 +208,14 @@ when `--out` is set). Expect a 3-5x reduction in agent-side read tokens per run.
 
 ### 8. Stable issue fingerprints and a `--baseline` delta  — Accuracy (loop), Tokens (agent side)
 
+**Status: done.** Every issue and question carries `fingerprint` (hash of category +
+source + cited text, normalized; line numbers excluded). `--baseline prev.json` adds
+`delta` (resolved / new / persisting entries and score change) to the JSON, a "Changes
+Since" section to Markdown, and `[new]`/`[persisting]` tags plus `RESOLVED` lines to
+compact output. Older baselines without fingerprints are matched through their quotes.
+Feeding persisting findings back into the prompt was not done; the cache key would
+have to absorb the baseline and the gain is unproven.
+
 **Evidence:** Issue IDs are assigned fresh by the model each run (`ISSUE-0001…`). After a
 revision, the agent cannot tell which findings were resolved, which persist, and which are
 new, so it re-reads everything and re-decides. SKILL.md compensates with a heuristic ("score
